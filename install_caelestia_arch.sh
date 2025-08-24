@@ -1,69 +1,62 @@
 #!/bin/bash
-set -e
 
-echo -e "\n== Arch Linux Installer: Custom Setup =="
+echo "== Arch Linux Installer: Custom Setup =="
 
-### Step 1: Check Internet Connection
-echo -e "\n== Step 1: Checking Internet Connectivity =="
-if ping -c 1 archlinux.org &>/dev/null; then
+# Step 1: Check Internet
+echo "== Step 1: Checking Internet Connectivity =="
+if ping -q -c 1 archlinux.org > /dev/null 2>&1; then
     echo "[✓] Internet is working."
 else
-    echo "[✗] Internet not working. Please check Wi-Fi or Ethernet connection."
+    echo "[X] No internet connection. Please connect and try again."
     exit 1
 fi
 
-### Step 2: Install Essential Tools
-echo -e "\n== Step 2: Installing Git and Curl =="
-sudo pacman -Sy --noconfirm git curl || {
-    echo "[✗] Failed to install git/curl. Retrying with fixed mirror."
-    sudo bash -c 'echo "Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist'
-    sudo pacman -Syy --noconfirm git curl || {
-        echo "[✗] Still failed to install essential tools. Exiting."
-        exit 1
-    }
-}
+# Step 2: Fix mirrors manually with fallback
+echo "== Step 2: Fixing Mirrorlist =="
+echo "Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch" | sudo tee /etc/pacman.d/mirrorlist
 
-### Step 3: Set Known Working Mirror (skip reflector)
-echo -e "\n== Step 3: Setting working mirror =="
-sudo bash -c 'cat > /etc/pacman.d/mirrorlist <<EOF
-Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch
-EOF'
-
-### Step 4: Initialize pacman
-echo -e "\n== Step 4: Initializing pacman keys =="
+# Step 3: Initialize keyring if not present
+echo "== Step 3: Initializing Pacman Keyring =="
 sudo pacman-key --init
 sudo pacman-key --populate archlinux
-sudo pacman -Syy --noconfirm
+sudo pacman -Sy --noconfirm
 
-### Step 5: Enable networking service
-echo -e "\n== Step 5: Enabling NetworkManager (if available) =="
-if systemctl list-unit-files | grep -q NetworkManager.service; then
-    sudo systemctl enable NetworkManager.service
+# Step 4: Install git and curl (only if missing)
+echo "== Step 4: Installing git and curl if missing =="
+if command -v git >/dev/null && command -v curl >/dev/null; then
+    echo "[✓] git and curl already installed."
 else
-    echo "[!] NetworkManager not installed. Skipping enable step."
+    sudo pacman -S --noconfirm git curl || {
+        echo "[X] Failed to install git and curl. Check mirrors or retry manually."
+        exit 1
+    }
 fi
 
-### Step 6: Clone GitHub repo
-echo -e "\n== Step 6: Cloning your Arch setup repo =="
+# Step 5: Clean up previous directory
+echo "== Step 5: Cloning Installer Repo =="
 rm -rf ArchSetup
-git clone https://github.com/Kaustub-Mocherla/Arch.git ArchSetup || {
-    echo "[✗] Git clone failed. Please verify the repo URL and internet."
+git clone https://github.com/Kaustub-Mocherla/ArchSetup.git || {
+    echo "[X] Git clone failed. Check your internet or the repo URL."
     exit 1
 }
 
-### Step 7: Run internal install script
-echo -e "\n== Step 7: Running the internal install script =="
-cd ArchSetup
+# Step 6: Make script executable and run
+cd ArchSetup || {
+    echo "[X] Failed to enter ArchSetup directory."
+    exit 1
+}
 
-if [[ -f install_celestia_arch.sh ]]; then
-    chmod +x install_celestia_arch.sh
-    ./install_celestia_arch.sh || {
-        echo "[✗] Internal script failed. Check the logs above."
-        exit 1
-    }
-else
-    echo "[✗] 'install_celestia_arch.sh' not found in the repo!"
+chmod +x install_celestia_arch.sh
+
+if [[ ! -f install_celestia_arch.sh ]]; then
+    echo "[X] Script file 'install_celestia_arch.sh' not found. Check repo contents."
     exit 1
 fi
 
-echo -e "\n[✓] Installation script completed successfully!"
+echo "== Step 6: Running Full Setup Script =="
+./install_celestia_arch.sh || {
+    echo "[X] Full setup script failed. See logs above."
+    exit 1
+}
+
+echo "[✓] Arch Linux Custom Setup Completed Successfully!"

@@ -2,57 +2,70 @@
 
 set -e
 
-echo "[*] Starting full Arch setup..."
+echo "== Step 1: Ensuring Network Connection =="
 
-# Step 1: Fix mirrors (handles timeout, slow repo errors)
-echo "[*] Updating mirrorlist with fastest servers..."
-sudo pacman -Sy --noconfirm reflector || sudo pacman -Sy --noconfirm
-sudo reflector --country India --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist || {
-    echo "[!] Reflector failed, falling back to curl method..."
-    sudo curl -o /etc/pacman.d/mirrorlist https://archlinux.org/mirrorlist/all/
-    sudo sed -i 's/^#Server/Server/' /etc/pacman.d/mirrorlist
-}
-
-# Step 2: Update system and keys
-echo "[*] Syncing and updating system..."
-sudo pacman -Syyu --noconfirm || echo "[!] Pacman update failed, retry manually later."
-
-# Step 3: Ensure internet is up
-ping -c 3 archlinux.org >/dev/null || {
-    echo "[!] Network check failed. Try connecting to WiFi first."
+# Test connection
+if ping -q -c 2 archlinux.org > /dev/null; then
+    echo "[✓] Internet connected"
+else
+    echo "[✗] No Internet connection. Exiting..."
     exit 1
-}
-
-# Step 4: Ensure NetworkManager is installed and active
-echo "[*] Checking NetworkManager..."
-if ! command -v nmcli &> /dev/null; then
-    echo "[*] Installing NetworkManager..."
-    sudo pacman -S --noconfirm networkmanager
 fi
-sudo systemctl enable --now NetworkManager || echo "[!] Could not start NetworkManager. Check manually."
 
-# Step 5: Install git and curl if not present
-echo "[*] Ensuring git and curl are available..."
-sudo pacman -S --noconfirm git curl
+echo "== Step 2: Installing Reflector (if missing) =="
 
-# Step 6: Clone your repo (replace with your username/repo if needed)
-echo "[*] Cloning your repo..."
-cd ~
-rm -rf ArchSetup || true
-git clone https://github.com/Kaustub-Mocherla/Arch.git ArchSetup || {
-    echo "[!] Git clone failed. Check URL or network."
-    exit 1
+if ! command -v reflector &> /dev/null; then
+    echo "[*] Installing reflector..."
+    sudo pacman -Sy --noconfirm reflector || {
+        echo "[✗] Failed to install reflector. Aborting..."
+        exit 1
+    }
+else
+    echo "[✓] Reflector is already installed"
+fi
+
+echo "== Step 3: Updating Mirrorlist with Fastest Servers =="
+
+if ! sudo reflector --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist --verbose --timeout 10; then
+    echo "[!] Reflector failed, using default mirrorlist"
+else
+    echo "[✓] Mirrorlist updated"
+fi
+
+echo "== Step 4: System Sync and Basic Tools =="
+
+sudo pacman -Syyu --noconfirm
+sudo pacman -S --needed --noconfirm git curl base-devel
+
+echo "== Step 5: Enable NetworkManager =="
+
+sudo pacman -S --noconfirm networkmanager
+sudo systemctl enable NetworkManager
+sudo systemctl start NetworkManager || {
+    echo "[!] Could not start NetworkManager, check manually"
 }
+
+echo "== Step 6: Clone Setup Repo =="
+
+rm -rf ArchSetup
+if git clone https://github.com/Kaustub-Mocherla/Arch.git ArchSetup; then
+    echo "[✓] Cloned Arch repo"
+else
+    echo "[✗] Failed to clone repo. Check your internet or repo URL"
+    exit 1
+fi
+
+echo "== Step 7: Run the Main Installer =="
 
 cd ArchSetup
+chmod +x install_celestia_arch.sh
 
-# Step 7: Set permissions and run your script
-if [[ -f install_coolest_arch.sh ]]; then
-    chmod +x install_coolest_arch.sh
-    echo "[*] Running your script: install_coolest_arch.sh"
-    ./install_coolest_arch.sh || echo "[!] Your script had some errors. Check above logs."
+if [[ -f install_celestia_arch.sh ]]; then
+    echo "[*] Starting full Arch setup..."
+    ./install_celestia_arch.sh
 else
-    echo "[!] Script install_coolest_arch.sh not found!"
+    echo "[✗] Script 'install_celestia_arch.sh' not found in repo. Exiting..."
+    exit 1
 fi
 
-echo "[✓] Done. If there were issues, scroll up and fix manually."
+echo "[✓] All Done. If you saw errors, scroll up and fix manually."

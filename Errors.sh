@@ -1,14 +1,19 @@
-# 1. Backup old mirrorlist (optional)
-cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak
+# 1. Set working mirrors
+echo 'Server = https://mirror.i3d.net/archlinux/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+echo 'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
 
-# 2. Use Reflector to fetch fresh mirrors (based on India; adjust if needed)
-reflector --country India --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+# 2. Update packages
+pacman -Sy
 
-# 3. If the above doesn't work, fallback to default worldwide mirrors:
-curl -o /etc/pacman.d/mirrorlist https://archlinux.org/mirrorlist/all/
+# 3. Install Git if not available
+pacman -S --noconfirm git
 
-# 4. Uncomment all servers in the fallback list (make them usable)
-sed -i 's/^#Server/Server/' /etc/pacman.d/mirrorlist
+# 4. Clone your public repo
+cd ~
+rm -rf Arch
+git clone https://github.com/Kaustub-Mocherla/Arch.git
+cd Arch
 
-# 5. Now update pacman DB
-pacman -Syy
+# 5. Run your installer
+chmod +x install.sh
+./install.sh

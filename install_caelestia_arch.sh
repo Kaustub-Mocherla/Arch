@@ -1,4 +1,15 @@
+
 #!/usr/bin/env bash
+
+# Step 1: Download latest mirrorlist
+sudo curl -o /etc/pacman.d/mirrorlist https://archlinux.org/mirrorlist/all/
+
+# Step 2: Uncomment all Server lines (use correct sed syntax!)
+sudo sed -i 's/^#Server/Server/' /etc/pacman.d/mirrorlist
+
+# Step 3: Sync package databases
+sudo pacman -Syy
+
 # Caelestia Shell one-shot installer for Arch Linux (with mirror auto-fix)
 set -euo pipefail
 log(){ printf "\n\033[1;32m[+]\033[0m %s\n" "$*"; }

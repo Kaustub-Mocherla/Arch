@@ -1,235 +1,294 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
-# ===========================
-# Caelestia Stocks Integration
-# ===========================
-# - Installs Python venv + yfinance
-# - Creates fetcher -> ~/.cache/caelestia/stocks/line.txt
-# - Creates systemd --user (service+timer) to refresh each minute
-# - Creates a Quickshell overlay config to display the line (no Caelestia edits)
-# - Autostarts overlay via Hyprland exec-once
-#
-# Usage:
-#   ./add_stocks_auto.sh "INFY.NS,TCS.NS,RELIANCE.NS"
-#   (Symbols are optional; defaults are used if omitted)
-#
-# Re-run any time; it is idempotent.
+# ===============================
+# Caelestia Stocks – One-shot installer
+# - Creates a python venv under ~/.local/share/caelestia-stocks/venv
+# - Installs yfinance (and deps) in the venv
+# - Writes a tiny Python fetcher and a wrapper binary: ~/.local/bin/caelestia-stocks
+# - Sets up a cache + optional systemd user timer (off by default; enable with --timer)
+# - Adds a default tickers file: ~/.config/caelestia/stocks.txt
+# ===============================
 
-SYMBOLS_INPUT="${1:-"INFY.NS,TCS.NS,RELIANCE.NS"}"
+### UX helpers
+cinfo()  { printf "\033[1;36m[i]\033[0m %s\n" "$*"; }
+cok()    { printf "\033[1;32m[✓]\033[0m %s\n" "$*"; }
+cwarn()  { printf "\033[1;33m[!]\033[0m %s\n" "$*"; }
+cfail()  { printf "\033[1;31m[x]\033[0m %s\n" "$*" >&2; }
+die()    { cfail "$*"; exit 1; }
 
-# --- find real user (if run with sudo) ---
-if [[ $EUID -eq 0 ]]; then
-  REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
-  [[ -n "$REAL_USER" ]] || { echo "[x] Cannot figure out non-root user"; exit 1; }
-  USER_HOME="$(eval echo ~"$REAL_USER")"
-  RUN_AS_USER=(su - "$REAL_USER" -c)
+### Resolve target user and HOME even when run with sudo
+TARGET_USER="${SUDO_USER:-${USER}}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[[ -z "${TARGET_HOME}" ]] && TARGET_HOME="$HOME"
+
+### Paths
+BASE_DIR="$TARGET_HOME/.local/share/caelestia-stocks"
+VENV_DIR="$BASE_DIR/venv"
+BIN_DIR="$TARGET_HOME/.local/bin"
+CONF_DIR="$TARGET_HOME/.config/caelestia"
+TICKERS_FILE="$CONF_DIR/stocks.txt"
+CACHE_FILE="$BASE_DIR/cache.json"
+WRAPPER_BIN="$BIN_DIR/caelestia-stocks"
+FETCH_PY="$BASE_DIR/stocks_fetch.py"
+PRINT_PY="$BASE_DIR/stocks_print.py"
+SVC_DIR="$TARGET_HOME/.config/systemd/user"
+SVC_FILE="$SVC_DIR/caelestia-stocks.service"
+TMR_FILE="$SVC_DIR/caelestia-stocks.timer"
+
+# Whether to install + enable systemd timer
+USE_TIMER=0
+if [[ "${1-}" == "--timer" ]]; then USE_TIMER=1; fi
+
+### Run-as-user helper (even if script was launched with sudo)
+if [[ "$EUID" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+  RUN_AS_USER=(sudo -u "$TARGET_USER" -H)
 else
-  REAL_USER="$USER"
-  USER_HOME="$HOME"
   RUN_AS_USER=()
 fi
 
-# --- pretty helpers ---
-g='\033[1;32m'; y='\033[1;33m'; r='\033[1;31m'; c='\033[1;36m'; n='\033[0m'
-msg(){ echo -e "${c}[i]${n} $*"; }
-ok(){  echo -e "${g}[✓]${n} $*"; }
-warn(){ echo -e "${y}[!]${n} $*"; }
-die(){ echo -e "${r}[x]${n} $*"; exit 1; }
+cinfo "Installing Caelestia Stocks for user: $TARGET_USER"
+cinfo "Home: $TARGET_HOME"
 
-# --- paths ---
-ROOT_DIR="$USER_HOME/.local/share/caelestia-stocks"
-VENV_DIR="$ROOT_DIR/venv"
-CACHE_DIR="$USER_HOME/.cache/caelestia/stocks"
-OUT_TXT="$CACHE_DIR/line.txt"
-UNIT_DIR="$USER_HOME/.config/systemd/user"
+# 1) Ensure base dirs
+mkdir -p "$BASE_DIR" "$BIN_DIR" "$CONF_DIR" "$SVC_DIR"
 
-QS_DIR="$USER_HOME/.config/quickshell"
-OVERLAY_NAME="caelestia-stocks-overlay"
-OVERLAY_DIR="$QS_DIR/$OVERLAY_NAME"
-OVERLAY_ENTRY="$OVERLAY_DIR/main.qml"
-
-HYPR_DIR="$USER_HOME/.config/hypr"
-HYPR_CONF="$HYPR_DIR/hyprland.conf"
-
-mkdir -p "$ROOT_DIR" "$CACHE_DIR" "$UNIT_DIR" "$OVERLAY_DIR" "$HYPR_DIR"
-
-# --- ensure python + venv tools ---
-msg "Ensuring Python and venv tools…"
-if [[ $EUID -eq 0 ]]; then
-  pacman -Sy --noconfirm --needed python python-venv python-pip >/dev/null || true
+# 2) Ensure python + venv tooling
+cinfo "Ensuring Python and venv tools…"
+if command -v python >/dev/null 2>&1; then
+  cok "python is present"
 else
-  warn "Not root; if python/venv is missing, install: sudo pacman -S python python-venv python-pip"
+  if [[ "$EUID" -ne 0 ]]; then
+    cwarn "python is missing. Install with: sudo pacman -S python"
+  else
+    pacman -Sy --noconfirm --needed python || die "Failed to install python"
+  fi
 fi
 
-# --- create venv + yfinance ---
+# Arch packages: python-pip is useful; python-virtualenv provides 'virtualenv' but we use 'python -m venv'
+if [[ "$EUID" -eq 0 ]]; then
+  pacman -Sy --noconfirm --needed python-pip >/dev/null || true
+fi
+
+# 3) Create venv (idempotent)
 if [[ ! -d "$VENV_DIR" ]]; then
-  "${RUN_AS_USER[@]}" "python -m venv '$VENV_DIR'" || die "Failed to create venv"
+  cinfo "Creating venv at: $VENV_DIR"
+  mkdir -p "$BASE_DIR"
+  "${RUN_AS_USER[@]}" python -m venv "$VENV_DIR" || die "Failed to create venv"
+else
+  cok "Venv already exists"
 fi
 
-msg "Installing yfinance into venv…"
-"${RUN_AS_USER[@]}" "'$VENV_DIR/bin/python' -m pip install --upgrade pip >/dev/null 2>&1 || true"
-"${RUN_AS_USER[@]}" "'$VENV_DIR/bin/pip' install --upgrade yfinance >/dev/null 2>&1" || die "pip install yfinance failed"
+# 4) Upgrade pip & install deps in venv
+cinfo "Installing Python deps in venv (yfinance, requests)…"
+"${RUN_AS_USER[@]}" bash -lc "source '$VENV_DIR/bin/activate' \
+  && python -m pip install --upgrade pip >/dev/null \
+  && python -m pip install --disable-pip-version-check -q yfinance requests" \
+  || die "pip install failed"
 
-# --- write fetcher script ---
-FETCHER="$ROOT_DIR/stocks_ticker.py"
-cat > "$FETCHER" <<'PY'
-#!/usr/bin/env python3
-import os
-from pathlib import Path
-import yfinance as yf
+cok "Python deps installed"
 
-symbols = os.getenv("SYMBOLS", "INFY.NS,TCS.NS,RELIANCE.NS")
-symbols = [s.strip() for s in symbols.split(",") if s.strip()]
-out_path = Path.home() / ".cache/caelestia/stocks/line.txt"
-out_path.parent.mkdir(parents=True, exist_ok=True)
+# 5) Default tickers file (idempotent)
+if [[ ! -f "$TICKERS_FILE" ]]; then
+  cat >"$TICKERS_FILE" <<'EOF'
+# One ticker per line. NSE use .NS suffix.
+# Examples:
+INFY.NS
+TCS.NS
+HDFCBANK.NS
+^NSEI
+AAPL
+MSFT
+EOF
+  chown "$TARGET_USER":"$TARGET_USER" "$TICKERS_FILE"
+  cok "Created $TICKERS_FILE (edit to your liking)"
+else
+  cok "Tickers file already exists ($TICKERS_FILE)"
+fi
 
-def fetch(sym):
-    t = yf.Ticker(sym)
-    price = None; prev = None
-    # Try fast_info first
+# 6) Write Python fetcher (creates/refreshes cache.json)
+cat >"$FETCH_PY" <<'PYEOF'
+import os, sys, json, time
+from datetime import datetime
+TICKERS_ENV = os.environ.get("CAE_STOCK_TICKERS", "").strip()
+TICKERS_FILE = os.environ.get("CAE_STOCK_TICKERS_FILE", os.path.expanduser("~/.config/caelestia/stocks.txt"))
+CACHE_FILE   = os.environ.get("CAE_STOCK_CACHE",        os.path.expanduser("~/.local/share/caelestia-stocks/cache.json"))
+
+def load_tickers():
+    if TICKERS_ENV:
+        return [t.strip() for t in TICKERS_ENV.split(",") if t.strip()]
     try:
-        fi = t.fast_info
-        price = float(fi["last_price"])
-        prev = float(fi.get("previous_close") or fi.get("regular_market_previous_close") or 0.0)
+        with open(TICKERS_FILE, "r") as f:
+            lines = []
+            for line in f:
+                s=line.strip()
+                if not s or s.startswith("#"): continue
+                lines.append(s)
+            return lines
     except Exception:
-        pass
-    # Fallback: history
-    if price is None or not prev:
+        return []
+
+def fetch(tickers):
+    import yfinance as yf
+    out=[]
+    if not tickers:
+        return out
+    data = yf.download(tickers=" ".join(tickers), period="1d", interval="1m", progress=False, threads=True)
+    # When multiple tickers, columns are MultiIndex; simplify:
+    now = datetime.now().isoformat(timespec="seconds")
+    for t in tickers:
         try:
-            h = t.history(period="2d", interval="1d")
-            if not h.empty:
-                price = float(h["Close"].iloc[-1])
-                if len(h) > 1:
-                    prev = float(h["Close"].iloc[-2])
+            # preferred: use fast info
+            info = yf.Ticker(t).fast_info
+            price = float(info.get("last_price") or info.get("last_close") or 0.0)
+            pc    = float(info.get("previous_close") or 0.0)
         except Exception:
-            pass
-    if price is None:
-        return f"{sym} ??.?? --"
-    pct = (price - prev) / prev * 100 if prev else 0.0
-    arrow = "▲" if pct >= 0 else "▼"
-    return f"{sym} {price:.2f} {arrow}{abs(pct):.2f}%"
+            # fallback from download frame
+            try:
+                if isinstance(data.columns, tuple) or hasattr(data.columns, "levels"):
+                    close_series = data["Close"][t].dropna()
+                else:
+                    close_series = data["Close"].dropna()
+                price = float(close_series.iloc[-1])
+                pc    = float(close_series.iloc[0])
+            except Exception:
+                continue
+        if price == 0 or pc == 0:
+            chg_pct = 0.0
+        else:
+            chg_pct = (price - pc) / pc * 100.0
+        out.append({
+            "ticker": t,
+            "price": round(price, 2),
+            "change_pct": round(chg_pct, 2),
+            "ts": now
+        })
+    return out
 
-line = " | ".join(fetch(s) for s in symbols)
-with open(out_path, "w") as f:
-    f.write(line + "\n")
-print(line)
-PY
-chmod +x "$FETCHER"
-chown -R "$REAL_USER":"$REAL_USER" "$ROOT_DIR" "$CACHE_DIR"
+def main():
+    tickers = load_tickers()
+    try:
+        data = fetch(tickers)
+    except Exception as e:
+        data = {"error": str(e), "tickers": tickers, "ts": datetime.now().isoformat(timespec="seconds")}
+    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+    with open(CACHE_FILE, "w") as f:
+        json.dump({"data": data, "ts": int(time.time())}, f)
+    print(CACHE_FILE)
 
-# --- wrapper to call fetcher with env ---
-RUNNER="$ROOT_DIR/run_once.sh"
-cat > "$RUNNER" <<SH
+if __name__ == "__main__":
+    main()
+PYEOF
+chown "$TARGET_USER":"$TARGET_USER" "$FETCH_PY"
+
+# 7) Write quick printer (reads cache and prints compact line)
+cat >"$PRINT_PY" <<'PYEOF'
+import os, json
+CACHE_FILE = os.environ.get("CAE_STOCK_CACHE", os.path.expanduser("~/.local/share/caelestia-stocks/cache.json"))
+if not os.path.exists(CACHE_FILE):
+    print("stocks: no cache")
+    raise SystemExit(0)
+try:
+    with open(CACHE_FILE, "r") as f:
+        payload = json.load(f)
+    rows = payload.get("data", [])
+except Exception:
+    print("stocks: bad cache")
+    raise SystemExit(0)
+
+def fmt(row):
+    t = row["ticker"]
+    p = f'{row["price"]:.2f}'
+    ch = float(row["change_pct"])
+    arrow = "▲" if ch >= 0 else "▼"
+    return f"{t} {p} {arrow}{abs(ch):.2f}%"
+
+print("  |  ".join(fmt(r) for r in rows[:6]))
+PYEOF
+chown "$TARGET_USER":"$TARGET_USER" "$PRINT_PY"
+
+# 8) Wrapper binary: ~/.local/bin/caelestia-stocks
+cat >"$WRAPPER_BIN" <<'SHEOF'
 #!/usr/bin/env bash
-set -Eeuo pipefail
-export SYMBOLS="${SYMBOLS_INPUT}"
-exec "$VENV_DIR/bin/python" "$FETCHER"
-SH
-chmod +x "$RUNNER"
-chown "$REAL_USER":"$REAL_USER" "$RUNNER"
+set -euo pipefail
+VENV="$HOME/.local/share/caelestia-stocks/venv"
+BASE="$HOME/.local/share/caelestia-stocks"
+FETCH="$BASE/stocks_fetch.py"
+PRINT="$BASE/stocks_print.py"
 
-# --- systemd user units: service + timer ---
-cat > "$UNIT_DIR/caelestia-stocks.service" <<SERVICE
+# Refresh cache if older than 45s (lightweight)
+needs_refresh() {
+  [[ ! -f "$BASE/cache.json" ]] && return 0
+  now=$(date +%s)
+  mtime=$(stat -c %Y "$BASE/cache.json" 2>/dev/null || echo 0)
+  (( now - mtime > 45 ))
+}
+
+if needs_refresh; then
+  "$VENV/bin/python" "$FETCH" >/dev/null 2>&1 || true
+fi
+exec "$VENV/bin/python" "$PRINT"
+SHEOF
+chmod +x "$WRAPPER_BIN"
+chown "$TARGET_USER":"$TARGET_USER" "$WRAPPER_BIN"
+cok "Installed command: $WRAPPER_BIN"
+
+# 9) Optional systemd user service/timer (off by default)
+if (( USE_TIMER )); then
+  cinfo "Writing systemd user service + timer (refresh every 30s)…"
+  cat >"$SVC_FILE" <<SVC
 [Unit]
-Description=Update Caelestia stocks line
+Description=Caelestia Stocks Cache Updater
 
 [Service]
 Type=oneshot
-Environment=SYMBOLS=${SYMBOLS_INPUT}
-ExecStart=${RUNNER}
-WorkingDirectory=${ROOT_DIR}
-SERVICE
-
-cat > "$UNIT_DIR/caelestia-stocks.timer" <<TIMER
+ExecStart=$VENV_DIR/bin/python $FETCH_PY
+TimeoutSec=20
+SVC
+  cat >"$TMR_FILE" <<TMR
 [Unit]
-Description=Update Caelestia stocks line every minute
+Description=Run Caelestia Stocks updater every 30 seconds
 
 [Timer]
-OnBootSec=15s
-OnUnitActiveSec=60s
-AccuracySec=10s
-Unit=caelestia-stocks.service
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=$(basename "$SVC_FILE")
 
 [Install]
 WantedBy=default.target
-TIMER
-
-chown -R "$REAL_USER":"$REAL_USER" "$UNIT_DIR"
-
-# --- first fetch + enable timer (user session) ---
-msg "Running first fetch…"
-"${RUN_AS_USER[@]}" "SYSTEMD_EXIT_STATUS=0 ${RUNNER} >/dev/null 2>&1 || true"
-ok "Output at: $OUT_TXT"
-
-msg "Enabling systemd --user timer…"
-"${RUN_AS_USER[@]}" "systemctl --user daemon-reload"
-"${RUN_AS_USER[@]}" "systemctl --user enable --now caelestia-stocks.timer"
-
-# --- Quickshell overlay (non-invasive) ---
-# Tiny translucent bar at top-right reading the file every 3s
-cat > "$OVERLAY_ENTRY" <<'QML'
-import QtQuick 2.15
-import QtQuick.Window 2.15
-
-Window {
-  id: root
-  width: textItem.implicitWidth + 24
-  height: textItem.implicitHeight + 12
-  flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-  color: "#1A000000" // translucent
-  visible: true
-
-  // Top-right corner
-  x: Screen.virtualX + Screen.width - width - 16
-  y: Screen.virtualY + 16
-
-  Text {
-    id: textItem
-    anchors.centerIn: parent
-    text: ""
-    color: "#e6e6e6"
-    font.family: "CaskaydiaCove Nerd Font"
-    font.pixelSize: 14
-  }
-
-  Timer {
-    interval: 3000; repeat: true; running: true
-    onTriggered: {
-      var f = Qt.openUrlExternally ? null : null; // NOOP
-      try {
-        var xhr = new XMLHttpRequest();
-        xhr.open("GET", "file://" + Qt.resolvedUrl("~/.cache/caelestia/stocks/line.txt"));
-        xhr.onreadystatechange = function() {
-          if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 0) {
-            textItem.text = xhr.responseText.trim();
-          }
-        }
-        xhr.send();
-      } catch (e) { /* ignore */ }
-    }
-    Component.onCompleted: triggered()
-  }
-}
-QML
-
-chown -R "$REAL_USER":"$REAL_USER" "$OVERLAY_DIR"
-
-# --- Autostart overlay via Hyprland exec-once (idempotent) ---
-mkdir -p "$HYPR_DIR"
-touch "$HYPR_CONF"
-if ! grep -q "qs -c $OVERLAY_NAME" "$HYPR_CONF"; then
-  echo -e "\n# Stocks overlay" >> "$HYPR_CONF"
-  echo "exec-once = qs -c $OVERLAY_NAME" >> "$HYPR_CONF"
-  ok "Added overlay autostart to Hyprland."
+TMR
+  chown "$TARGET_USER":"$TARGET_USER" "$SVC_FILE" "$TMR_FILE"
+  "${RUN_AS_USER[@]}" systemctl --user daemon-reload
+  "${RUN_AS_USER[@]}" systemctl --user enable --now "$(basename "$TMR_FILE")"
+  cok "Timer enabled (systemctl --user status $(basename "$TMR_FILE"))"
 else
-  msg "Overlay autostart already present in Hyprland."
+  cinfo "Timer not enabled. Re-run with '--timer' to install background refresh."
 fi
 
-# --- Done ---
-ok "Stocks integration installed."
-echo -e "${c}Watchlist:${n} $SYMBOLS_INPUT"
-echo -e "${c}Output file:${n} $OUT_TXT"
-echo -e "${c}Overlay config:${n} $OVERLAY_ENTRY"
-echo -e "${c}Change symbols:${n} edit ${UNIT_DIR}/caelestia-stocks.service (Environment=SYMBOLS=...)"
-echo -e "Then run: ${g}systemctl --user restart caelestia-stocks.service${n} (as $REAL_USER)"
+# 10) Final hints for Caelestia/Hyprland integration
+cat <<'NOTE'
+
+────────────────────────────────────────────────────────────────
+✅ Done.
+
+Use this command anywhere (panel, keybind, runner, qml):
+    caelestia-stocks
+
+It prints a compact line like:
+    INFY.NS 1523.45 ▲0.80%  |  TCS.NS 4021.10 ▲0.15%  |  …
+
+Edit your tickers here:
+    ~/.config/caelestia/stocks.txt
+(One per line; NSE uses .NS suffix; supports ^NSEI, AAPL, etc.)
+
+QML/panel integration idea (poll the command):
+    // In your QML, run caeslestia-stocks and display stdout
+    // Example snippets were printed in earlier instructions.
+
+Hyprland keybind example (append to ~/.config/caelestia/hypr-user.conf):
+    bind = $mainMod, S, exec, notify-send "$(caelestia-stocks)"
+
+(Then reload Hyprland.)
+
+NOTE
+cok "Caelestia Stocks setup complete."

@@ -1,119 +1,65 @@
+cat > ~/repair_caelestia.sh <<'EOF'
 #!/usr/bin/env bash
-# Fix Caelestia UI not showing and autostart it in Hyprland
-# - Adds exec-once for QuickShell (Caelestia shell.qml)
-# - Creates hyprland.conf if missing (with a sane stub)
-# - Backs up any file it edits (once)
-# - Tries to pick a terminal (kitty/foot/alacritty) to start too
-# - Reloads Hyprland if running, otherwise tells you what to do
+set -euo pipefail
 
-set -Eeuo pipefail
+echo "[i] Installing required packages…"
+sudo pacman -S --needed \
+  quickshell qt6-wayland qt6-declarative qt6-quickcontrols2 qt6-svg \
+  hyprland swww kitty git base-devel
 
-# ---------- pretty prints ----------
-C0="\033[0m"; Cg="\033[1;32m"; Cy="\033[1;33m"; Cr="\033[1;31m"; Cb="\033[1;34m"
-ok(){   echo -e "${Cg}[✓]${C0} $*"; }
-warn(){ echo -e "${Cy}[!]${C0} $*"; }
-err(){  echo -e "${Cr}[x]${C0} $*"; }
-
-# ---------- paths & probes ----------
-HCONF_DIR="$HOME/.config/hypr"
-HCONF="$HCONF_DIR/hyprland.conf"
-QML="$HOME/.config/quickshell/caelestia/shell.qml"
-QS_BIN="$(command -v qs || true)"
-[ -z "$QS_BIN" ] && QS_BIN="$(command -v quickshell || true)"
-
-# choose a terminal to autostart (best-effort, optional)
-term=""
-for c in kitty foot alacritty; do
-  if command -v "$c" >/dev/null 2>&1; then term="$c"; break; fi
-done
-
-# ---------- checks ----------
-if [ -z "$QS_BIN" ]; then
-  warn "QuickShell binary not found (qs/quickshell)."
-  warn "Install it first (e.g. 'yay -S quickshell-git') then re-run this script."
-fi
-
-if [ ! -f "$QML" ]; then
-  warn "Caelestia shell QML not found at:"
-  echo "     $QML"
-  warn "If you haven’t installed Caelestia shell yet, do that first, or adjust path below."
-fi
-
-# ---------- prepare hyprland.conf ----------
-mkdir -p "$HCONF_DIR"
-
-if [ ! -f "$HCONF" ]; then
-  warn "No hyprland.conf found; creating a minimal one."
-  cat > "$HCONF" <<'HYPR'
-# Minimal Hyprland config (created by fix_ui.sh)
-# You can edit this later to your liking.
-
-# Example monitor rule (Hyprland default usually works without this)
-# monitor=,preferred,auto,auto
-
-# Input defaults (optional)
-# input {
-#   kb_layout = us
-# }
-
-# The Caelestia QuickShell autostart block is appended below by fix_ui.sh
-HYPR
-  ok "Created $HCONF"
-fi
-
-# one-time backup
-if [ ! -f "${HCONF}.bak.fixui" ]; then
-  cp -n "$HCONF" "${HCONF}.bak.fixui" || true
-  ok "Backup saved to ${HCONF}.bak.fixui"
-fi
-
-# Remove any old lines that tried to launch quickshell/qs to avoid duplicates
-sed -i '/exec-once\s*=\s*.*\(quickshell\|^qs\| qs \)/d' "$HCONF"
-
-# Compose the autostart block
-QS_CMD="\$${RANDOM}"  # dummy; we set real cmd below
-if [ -n "$QS_BIN" ]; then
-  QS_CMD="$QS_BIN -c $QML"
+# Ensure Caelestia shell files exist
+mkdir -p "$HOME/.config/quickshell"
+if [ ! -d "$HOME/.config/quickshell/caelestia" ]; then
+  echo "[i] Fetching Caelestia shell…"
+  git clone --depth=1 https://github.com/caelestia-dots/shell "$HOME/.config/quickshell/caelestia"
 else
-  # still write a placeholder so user sees what to change
-  QS_CMD="quickshell -c $QML"
+  echo "[i] Caelestia shell already present; pulling updates…"
+  git -C "$HOME/.config/quickshell/caelestia" pull --ff-only || true
 fi
 
-# Optional wallpaper starter (commented out, safe to enable)
-WALL_LINE="# exec-once = swww init && swww img ~/Pictures/wallpapers/mywall.png"
+# Basic sanity
+if ! command -v qs >/dev/null; then
+  echo "[x] 'qs' (Quickshell) not in PATH. Aborting." >&2
+  exit 1
+fi
+if [ ! -f "$HOME/.config/quickshell/caelestia/shell.qml" ]; then
+  echo "[x] shell.qml missing in ~/.config/quickshell/caelestia. Aborting." >&2
+  exit 1
+fi
 
-# Optional terminal starter (only if we found one)
-TERM_LINE=""
-[ -n "$term" ] && TERM_LINE="exec-once = $term"
+# Hyprland autostart
+CFG="$HOME/.config/hypr/hyprland.conf"
+mkdir -p "$(dirname "$CFG")"
 
-cat >> "$HCONF" <<EOF
+# Remove any previous duplicate lines
+tmpcfg="$(mktemp)"
+if [ -f "$CFG" ]; then
+  sed '/# BEGIN Caelestia Autostart/,/# END Caelestia Autostart/d' "$CFG" > "$tmpcfg"
+else
+  : > "$tmpcfg"
+fi
 
-# === Added by fix_ui.sh (Caelestia QuickShell autostart) ===
-# If this block misbehaves, check your QuickShell binary and QML path.
-exec-once = $QS_CMD
-$TERM_LINE
-$WALL_LINE
-# === end block ===
+{
+  echo ''
+  echo '# BEGIN Caelestia Autostart (managed)'
+  echo 'exec-once = qs -c ~/.config/quickshell/caelestia/shell.qml'
+  # Safety terminal on first boot so you’re never “stuck” on a blank screen.
+  # You can comment this line later if you don’t want a terminal to appear:
+  echo 'exec-once = kitty'
+  # Optional wallpaper daemon (uncomment and set your image if you want)
+  # echo 'exec-once = swww init && swww img ~/.config/quickshell/caelestia/assets/wallpapers/default.jpg'
+  echo '# END Caelestia Autostart'
+} >> "$tmpcfg"
+
+mv "$tmpcfg" "$CFG"
+
+echo
+echo "[✓] Autostart written to $CFG"
+echo "[i] To stop auto-launching a terminal, delete the 'exec-once = kitty' line later."
+echo
+echo "[→] Now reboot, log into **Hyprland**, and Caelestia should appear."
+echo "    From a terminal inside Hyprland you can test manually:"
+echo "       qs -c ~/.config/quickshell/caelestia/shell.qml"
 EOF
-
-ok "Wrote QuickShell autostart to $HCONF"
-[ -n "$term" ] && ok "Terminal will autostart: $term" || warn "No terminal found to autostart (kitty/foot/alacritty)."
-
-# ---------- try a live reload ----------
-if command -v hyprctl >/dev/null 2>&1 && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
-  if hyprctl reload >/dev/null 2>&1; then
-    ok "Hyprland reloaded. Give it a second — Caelestia UI should appear."
-  else
-    warn "Tried to reload Hyprland but failed. Log out and log back in."
-  fi
-else
-  warn "Hyprland not detected as running from this shell."
-  echo "  -> Log out to tty and run:  hyprland   (or reboot into your Hyprland session)."
-fi
-
-# ---------- final hints ----------
-echo
-[ -z "$QS_BIN" ] && warn "Install QuickShell (qs) and re-run this script."
-[ ! -f "$QML" ]  && warn "Ensure Caelestia QML exists at: $QML"
-echo
-ok "Done."
+chmod +x ~/repair_caelestia.sh
+bash ~/repair_caelestia.sh

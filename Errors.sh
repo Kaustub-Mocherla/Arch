@@ -35,7 +35,8 @@ rm -rf "$CELE_DIR"
 mkdir -p "$CELE_DIR"
 
 echo "[*] Downloading Caelestia Shell..."
-curl -L https://github.com/caelestia-dots/shell/archive/refs/heads/main.tar.gz | tar -xz -C "$CELE_DIR" --strip-components=1
+curl -L https://github.com/caelestia-dots/shell/archive/refs/heads/main.tar.gz \
+  | tar -xz -C "$CELE_DIR" --strip-components=1
 
 # -------------------------------
 # Fetch Caelestia Modules
@@ -44,7 +45,8 @@ rm -rf "$MOD_DIR"
 mkdir -p "$MOD_DIR"
 
 echo "[*] Downloading Caelestia Modules..."
-curl -L https://github.com/caelestia-dots/modules/archive/refs/heads/main.tar.gz | tar -xz -C "$MOD_DIR" --strip-components=1
+curl -L https://github.com/caelestia-dots/modules/archive/refs/heads/main.tar.gz \
+  | tar -xz -C "$MOD_DIR" --strip-components=1
 
 # -------------------------------
 # Autostart in Hyprland
@@ -71,4 +73,4 @@ echo
 echo "[✔] Caelestia installed successfully!"
 echo "    - Logs: $LOG"
 echo "    - To start manually: quickshell -c caelestia"
-echo "    - Or just re-login into Hyprland (autostarts Caelestia)."
+echo "    - Or just re-login into Hyprland (Caelestia autostarts)."

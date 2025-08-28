@@ -4,7 +4,7 @@ IFS=$'\n\t'
 
 say(){ printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok(){  printf '\033[1;32m[✓]\033[0m %s\n' "$*"; }
-warn(){printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
+warn(){ printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die(){ printf '\n\033[1;31m[x]\033[0m %s\n' "$*"; exit 1; }
 
 SHELL_DIR="$HOME/.config/quickshell/caelestia"

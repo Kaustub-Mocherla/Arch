@@ -1,151 +1,189 @@
-bash -c '
-set -euo pipefail
+#!/usr/bin/env bash
+# setup_caelestia.sh
+# One-shot installer/repairer for Hyprland + Caelestia (quickshell) on Arch
 
-# ---- Pretty printing helpers ----
-info(){ printf "\033[1;36m[ i ]\033[0m %s\n" "$*"; }
-ok(){   printf "\033[1;32m[ ✓ ]\033[0m %s\n" "$*"; }
-warn(){ printf "\033[1;33m[ ! ]\033[0m %s\n" "$*"; }
-err(){  printf "\033[1;31m[ x ] %s\033[0m\n" "$*" >&2; }
+set -Eeuo pipefail
+IFS=$'\n\t'
 
-# ---- 0) Root check for system operations ----
-if [[ $EUID -ne 0 ]]; then
-  if command -v sudo >/dev/null 2>&1; then
-    SUDO="sudo"
+LOG="/var/log/caelestia_full_setup.log"
+mkdir -p "$(dirname "$LOG")" || true
+exec > >(tee -a "$LOG") 2>&1
+
+green(){ printf "\033[1;32m%s\033[0m\n" "$*"; }
+yellow(){ printf "\033[1;33m%s\033[0m\n" "$*"; }
+red(){ printf "\033[1;31m%s\033[0m\n" "$*"; }
+die(){ red "[x] $*"; exit 1; }
+
+need_root(){
+  if [[ $EUID -ne 0 ]]; then
+    die "Run this script with: sudo ./setup_caelestia.sh"
+  fi
+}
+
+need_internet(){
+  if ! ping -c1 -W2 archlinux.org >/dev/null 2>&1; then
+    yellow "[!] Internet looks down; trying 1.1.1.1"
+    ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 || die "No internet connectivity. Connect Wi-Fi/Ethernet and re-run."
+  fi
+  green "[✓] Internet OK"
+}
+
+fix_mirrors(){
+  yellow "[i] Refreshing pacman mirrors (reflector)..."
+  pacman -Sy --noconfirm reflector || true
+  if command -v reflector >/dev/null 2>&1; then
+    reflector --country 'India,United States,Singapore' \
+      --protocol https --sort rate --save /etc/pacman.d/mirrorlist || true
+    green "[✓] Mirrors refreshed (or kept as-is)"
   else
-    err "Please install sudo (or run as root)."; exit 1
+    yellow "[i] reflector not installed; continuing with current mirrors"
   fi
-else
-  SUDO=""
-fi
+}
 
-# ---- 1) Basic network sanity ----
-info "Checking internet connectivity…"
-if ! ping -c1 archlinux.org >/dev/null 2>&1; then
-  warn "Ping failed; trying with curl DNS resolver test…"
-  if ! curl -sI https://archlinux.org >/dev/null 2>&1; then
-    err "No internet. Connect to Wi-Fi/Ethernet and re-run."; exit 1
+pacman_install(){
+  local pkgs=("$@")
+  pacman -S --needed --noconfirm "${pkgs[@]}"
+}
+
+ensure_yay(){
+  if ! command -v yay >/dev/null 2>&1; then
+    yellow "[i] Installing yay (AUR helper)…"
+    pacman_install git base-devel || true
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    pushd "$tmpdir" >/dev/null
+      sudo -u "$(logname)" git clone https://aur.archlinux.org/yay.git
+      chown -R "$(logname)":"$(logname)" yay
+      cd yay
+      sudo -u "$(logname)" makepkg -si --noconfirm
+    popd >/dev/null
   fi
-fi
-ok "Internet looks good."
+  green "[✓] yay is ready"
+}
 
-# ---- 2) Core packages (pacman) ----
-info "Installing core packages (pacman)…"
-$SUDO pacman -Sy --noconfirm --needed \
-  base-devel git curl wget \
-  networkmanager \
-  hyprland \
-  wl-clipboard grim swappy \
-  ddcutil brightnessctl \
-  cava lm_sensors fish \
-  qt6-declarative libpipewire libqalculate \
-  gcc-libs
-
-# Optional but very helpful on Wayland:
-$SUDO pacman -Sy --noconfirm --needed \
-  xdg-desktop-portal-hyprland || true
-
-# Enable NetworkManager
-info "Enabling NetworkManager…"
-$SUDO systemctl enable --now NetworkManager || true
-ok "Core done."
-
-# ---- 3) Install yay (AUR helper) if missing ----
-if ! command -v yay >/dev/null 2>&1; then
-  info "Installing yay (AUR helper)…"
-  tmpdir="$(mktemp -d)"; trap "rm -rf \"$tmpdir\"" EXIT
-  (
-    cd "$tmpdir"
-    git clone https://aur.archlinux.org/yay.git
-    cd yay
-    makepkg -si --noconfirm
-  )
-  ok "yay installed."
-fi
-
-# ---- 4) AUR packages required by Caelestia shell ----
-# (exact names from Caelestia README, with AUR variants where needed)
-info "Installing AUR/extra deps for Caelestia Shell…"
-yay -S --noconfirm --needed \
-  quickshell-git \
-  caelestia-cli-git \
-  ttf-caskaydia-cove-nerd \
-  ttf-material-symbols || warn "Some optional AUR packages may have failed; continuing."
-
-ok "Dependencies step finished."
-
-# ---- 5) Clone Caelestia Shell to the correct location ----
-CFG_DIR="${HOME}/.config/quickshell"
-DEST="${CFG_DIR}/caelestia"
-info "Cloning Caelestia Shell repo into: $DEST"
-mkdir -p "$CFG_DIR"
-if [[ -d "$DEST/.git" ]]; then
-  info "Repo already exists; pulling latest…"
-  git -C "$DEST" pull --rebase --autostash || warn "git pull had issues; continuing."
-else
-  git clone https://github.com/caelestia-dots/shell.git "$DEST"
-fi
-ok "Repo ready."
-
-# ---- 6) Beat detector (optional) ----
-# Only build if the source file exists in the repo
-BD_SRC="$DEST/assets/beat_detector.cpp"
-BD_OUT="/usr/lib/caelestia/beat_detector"
-if [[ -f "$BD_SRC" ]]; then
-  info "Building beat detector…"
-  $SUDO mkdir -p /usr/lib/caelestia
-  g++ -std=c++17 -Wall -Wextra \
-    -I/usr/include/pipewire-0.3 -I/usr/include/spa-0.2 -I/usr/include/aubio \
-    -o beat_detector "$BD_SRC" -lpipewire-0.3 -laubio
-  $SUDO mv beat_detector "$BD_OUT"
-  ok "Beat detector installed to $BD_OUT"
-else
-  warn "Beat detector source not found in repo; skipping build (this is okay)."
-fi
-
-# ---- 7) Fonts cache + wallpapers folder ----
-info "Updating font cache & making wallpapers dir…"
-$SUDO fc-cache -f >/dev/null 2>&1 || true
-mkdir -p "${HOME}/Pictures/Wallpapers"
-
-# ---- 8) Hyprland autostart for Caelestia shell ----
-HYPR_DIR="${HOME}/.config/hypr"
-HYPR_CONF="${HYPR_DIR}/hyprland.conf"
-mkdir -p "$HYPR_DIR"
-if [[ -f "$HYPR_CONF" ]]; then
-  if ! grep -q "qs -c caelestia" "$HYPR_CONF"; then
-    info "Adding Caelestia autostart to existing hyprland.conf"
-    printf "\n# Autostart Caelestia shell\nexec-once = qs -c caelestia\n" >> "$HYPR_CONF"
+install_pkg(){
+  # Try pacman first, fall back to yay for AUR-only packages
+  local pkg="$1"
+  if pacman -Si "$pkg" >/dev/null 2>&1; then
+    pacman_install "$pkg"
   else
-    info "Autostart line already present."
+    yellow "[i] $pkg not in repos, trying AUR via yay…"
+    sudo -u "$(logname)" yay -S --needed --noconfirm "$pkg" || die "Failed to install $pkg"
   fi
-else
-  info "Creating a minimal hyprland.conf with Caelestia autostart…"
-  cat > "$HYPR_CONF" <<EOF
-# Minimal Hyprland config
-monitor=,preferred,auto,1
+}
+
+ensure_user_dirs(){
+  local user home
+  user="$(logname)"
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  mkdir -p "$home/.config" "$home/.local/bin" "$home/.config/quickshell" "$home/.config/hypr"
+  chown -R "$user":"$user" "$home/.config" "$home/.local"
+}
+
+clone_caelestia(){
+  local user home target
+  user="$(logname)"
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  target="$home/.config/quickshell/caelestia"
+  if [[ -d "$target/.git" ]]; then
+    yellow "[i] Updating existing Caelestia clone…"
+    sudo -u "$user" git -C "$target" pull --rebase || true
+  else
+    yellow "[i] Cloning Caelestia shell…"
+    sudo -u "$user" git clone --depth=1 https://github.com/caelestia-dots/shell "$target"
+  fi
+  chown -R "$user":"$user" "$target"
+  green "[✓] Caelestia shell ready at $target"
+}
+
+wire_hyprland_autostart(){
+  local user home hyprconf
+  user="$(logname)"
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  hyprconf="$home/.config/hypr/hyprland.conf"
+
+  touch "$hyprconf"
+  chown "$user":"$user" "$hyprconf"
+
+  # Remove previous lines we manage
+  sudo -u "$user" sed -i '/# CAELESTIA-BEGIN/,/# CAELESTIA-END/d' "$hyprconf" || true
+
+  cat <<'HYPR' | sudo -u "$user" tee -a "$hyprconf" >/dev/null
+# CAELESTIA-BEGIN (managed by setup_caelestia.sh)
+env = XDG_CURRENT_DESKTOP,Hyprland
+env = QT_QPA_PLATFORM,wayland
+env = QT_WAYLAND_DISABLE_WINDOWDECORATION,1
+env = GDK_BACKEND,wayland,x11
+env = SDL_VIDEODRIVER,wayland
+
+# Make sure portals exist for file pickers / screenshots
+exec-once = /usr/lib/xdg-desktop-portal-hyprland & sleep 1 && /usr/lib/xdg-desktop-portal &
+
+# Start the Quickshell Caelestia shell
 exec-once = qs -c caelestia
-EOF
-fi
+# CAELESTIA-END
+HYPR
 
-# ---- 9) Final tips ----
-cat <<TIP
+  green "[✓] Hyprland will autostart Caelestia (qs -c caelestia)"
+}
 
-\033[1;32mAll done (no fatal errors)\033[0m
+make_manual_launcher(){
+  local user home
+  user="$(logname)"
+  home="$(getent passwd "$user" | cut -d: -f6)"
 
-• To launch the shell manually (inside your Wayland session):
-    \033[1;36mqs -c caelestia\033[0m
-  or
-    \033[1;36mcaelestia shell -d\033[0m
+  cat <<'EOS' | tee /usr/local/bin/caelestia-run >/dev/null
+#!/usr/bin/env bash
+set -euo pipefail
+export QT_QPA_PLATFORM=wayland
+export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+export GDK_BACKEND=wayland,x11
+exec qs -c caelestia
+EOS
+  chmod +x /usr/local/bin/caelestia-run
+  green "[✓] Manual launcher: caelestia-run"
+}
 
-• Hyprland autostarts Caelestia now (via your Hyprland config).
+main(){
+  need_root
+  need_internet
+  fix_mirrors
 
-• If wallpapers or fonts look off, you can (re)install optional AUR fonts:
-    \033[1;36myay -S ttf-caskaydia-cove-nerd ttf-material-symbols\033[0m
+  yellow "[i] System update…"
+  pacman -Syu --noconfirm
 
-• Start Hyprland from a TTY with:
-    \033[1;36mHyprland\033[0m
-  (or pick Hyprland from your display manager if you use one)
+  # Essentials from repos
+  pacman_install \
+    hyprland kitty git curl wget networkmanager \
+    qt6-wayland qt6-svg qt6-declarative \
+    xdg-desktop-portal xdg-desktop-portal-hyprland
 
-Logs (if you need them): \033[1;36mjournalctl -b\033[0m and \033[1;36m~/.local/share/yay/*/log\033[0m
-TIP
-'
+  systemctl enable --now NetworkManager || true
+
+  ensure_yay
+
+  # AUR / special packages
+  install_pkg quickshell
+  # In case user mirrors didn’t have this in repo
+  if ! pacman -Qi qt6-quickcontrols2 >/dev/null 2>&1; then
+    install_pkg qt6-quickcontrols2
+  fi
+
+  ensure_user_dirs
+  clone_caelestia
+  wire_hyprland_autostart
+  make_manual_launcher
+
+  green ""
+  green "=============================================="
+  green "  All done. Reboot, log into **Hyprland**."
+  green "  Caelestia should appear automatically."
+  green ""
+  green "  If something goes wrong in-session:"
+  green "    Super+Q (or open kitty) and run:  caelestia-run"
+  green ""
+  green "  Full log: $LOG"
+  green "=============================================="
+}
+
+main "$@"

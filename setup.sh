@@ -1,168 +1,212 @@
 #!/usr/bin/env bash
-# caelestia_full_reset.sh
+# Caelestia: full (re)install + autostart, with graceful fallback when "modules" repo is missing.
+# Safe to re-run. Logs to ~/.local/share/caelestia-install/installer.log
+
 set -Eeuo pipefail
 
-LOG="${HOME}/caelestia_full_reset.log"
-exec > >(awk '{ print strftime("[%F %T]"), $0 }' | tee -a "$LOG") 2>&1
+### ────────────────────────────── config ──────────────────────────────
+LOGDIR="$HOME/.local/share/caelestia-install"
+LOGFILE="$LOGDIR/installer.log"
+SHELL_DIR="$HOME/.config/quickshell/caelestia"
+CANDIDATE_MODULE_DIRS=("$SHELL_DIR/modules" "$SHELL_DIR/qml" "$SHELL_DIR/Modules" "$SHELL_DIR/src/modules")
+LAUNCHER="$HOME/.local/bin/caelestia-shell"
 
-say() { printf "\033[1;36m[*]\033[0m %s\n" "$*"; }
-ok()  { printf "\033[1;32m[✓]\033[0m %s\n" "$*"; }
-warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*"; }
-err() { printf "\033[1;31m[x]\033[0m %s\n" "$*"; }
-die(){ err "$*"; exit 1; }
+# Official repos
+REPO_SHELL="https://github.com/caelestia-dots/shell"
+# The old modules repo has gone private/removed for many users; leave as null/placeholder
+REPO_MODULES_GIT="https://github.com/caelestia-dots/modules"
+REPO_MODULES_TARBALL="https://codeload.github.com/caelestia-dots/modules/tar.gz/refs/heads/main"
 
-REPO_SHELL_ZIP="https://codeload.github.com/caelestia-dots/shell/zip/refs/heads/main"
-REPO_MODULES_ZIP="https://codeload.github.com/caelestia-dots/modules/zip/refs/heads/main"
+### ─────────────────────────── helpers/logging ────────────────────────
+mkdir -p "$LOGDIR"
+exec 3>>"$LOGFILE"
+ts() { date +"%Y-%m-%d %H:%M:%S"; }
+say() { printf "\e[36m[+] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; }
+ok()  { printf "\e[32m[✓] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; }
+warn(){ printf "\e[33m[!] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; }
+die() { printf "\e[31m[x] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; exit 1; }
 
-QS_DIR="${HOME}/.config/quickshell/caelestia"
-QS_MOD_DIR="${QS_DIR}/modules"
-HYPR_CONF="${HOME}/.config/hypr/hyprland.conf"
+need() { command -v "$1" >/dev/null 2>&1; }
 
-require_root_tools() {
-  command -v sudo >/dev/null || die "sudo is required."
-  command -v pacman >/dev/null || die "This script is for Arch/Arch-like systems."
-}
-
-check_network() {
-  say "Checking network…"
-  if ping -c1 archlinux.org >/dev/null 2>&1; then
-    ok "Internet reachable."
-  else
-    die "No internet connectivity. Connect first and re-run."
+as_root() {
+  if need sudo; then sudo bash -c "$*"
+  else die "sudo not found. Install sudo and add your user to wheel."
   fi
-  say "Enabling NTP time sync…"
-  sudo timedatectl set-ntp true || warn "timedatectl failed (non-fatal)."
 }
 
-fix_tmp() {
-  say "Ensuring /tmp permissions (1777)…"
-  sudo chmod 1777 /tmp || die "Failed to set /tmp permissions."
+http_ok() {
+  local url="$1"
+  curl -fsLI --retry 3 --retry-delay 1 "$url" >/dev/null 2>&1
 }
 
-base_packages() {
-  say "Installing/refreshing base packages…"
-  sudo pacman -Syy --noconfirm || warn "pacman -Syy had warnings."
-  sudo pacman -S --needed --noconfirm \
-    git curl unzip rsync base-devel \
-    qt6-base qt6-declarative qt6-svg qt6-shadertools qt6-wayland \
-    pipewire wireplumber \
-    hyprland kitty || warn "Some packages were already present or optional."
-}
+### ───────────────────────── network sanity ───────────────────────────
+say "Checking internet…"
+if ping -c 1 -W 2 archlinux.org >/dev/null 2>&1; then
+  ok "Network looks good."
+else
+  warn "Ping to archlinux.org failed; continuing anyway (mirrors may still work)."
+fi
 
-install_yay() {
-  if command -v yay >/dev/null 2>&1; then
-    ok "yay already installed."
-    return
-  fi
-  say "Installing yay (AUR helper)…"
-  # Build as normal user
-  mkdir -p "${HOME}/builds"; cd "${HOME}/builds"
-  rm -rf yay
-  git clone https://aur.archlinux.org/yay.git
-  cd yay
-  # makepkg must NOT be run as root
-  makepkg -si --noconfirm || die "Failed to build/install yay."
-  ok "yay installed."
-}
+### ───────────────────── system packages (pacman) ─────────────────────
+say "Syncing pacman and installing base packages…"
+as_root "pacman -Sy --noconfirm archlinux-keyring || true"
+as_root "pacman -Syu --noconfirm"
+as_root "pacman -S --needed --noconfirm \
+  git base-devel curl unzip rsync sed grep \
+  mesa libva-mesa-driver vulkan-radeon \
+  qt6-base qt6-declarative qt6-svg qt6-shadertools qt6-wayland \
+  hyprland kitty pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber"
 
-install_quickshell() {
-  if command -v quickshell >/dev/null 2>&1; then
-    ok "QuickShell already present."
-    return
-  fi
+ok "Core packages present."
+
+### ───────────────────── AUR helper (paru or yay) ─────────────────────
+AUR_HELPER=""
+if need paru; then AUR_HELPER="paru"
+elif need yay; then AUR_HELPER="yay"
+else
+  say "No AUR helper found; installing paru-bin (non-root build)…"
+  WORK="$HOME/.cache/aur/paru-bin"
+  rm -rf "$WORK"; mkdir -p "$WORK"
+  git clone --depth=1 https://aur.archlinux.org/paru-bin.git "$WORK" >&3
+  ( cd "$WORK" && makepkg -si --noconfirm ) >&3
+  AUR_HELPER="paru"
+fi
+ok "AUR helper: $AUR_HELPER"
+
+### ─────────────────── QuickShell (from AUR) ─────────────────────────
+if ! need quickshell; then
   say "Installing QuickShell from AUR…"
-  yay -S --noconfirm quickshell || die "Failed to install quickshell (AUR)."
-  ok "QuickShell installed."
-}
+  $AUR_HELPER -S --noconfirm quickshell-bin || $AUR_HELPER -S --noconfirm quickshell || die "Could not install quickshell."
+else
+  ok "QuickShell already present."
+fi
 
-reset_shell_dirs() {
-  say "Resetting Caelestia directories…"
-  rm -rf "${QS_DIR}"
-  mkdir -p "${QS_MOD_DIR}"
-  ok "Folders ready at ${QS_DIR}"
-}
+### ───────────────────── Caelestia shell (config) ─────────────────────
+say "Resetting Caelestia shell config…"
+if [[ -d "$SHELL_DIR" ]]; then
+  BAK="${SHELL_DIR}.bak.$(date +%s)"
+  mv "$SHELL_DIR" "$BAK"
+  ok "Backed up old shell to $BAK"
+fi
+mkdir -p "$SHELL_DIR"
 
-fetch_and_unpack() {
-  local zip_url="$1" dest_dir="$2" tmp_zip
-  tmp_zip="$(mktemp --suffix=.zip)"
-  say "Downloading: ${zip_url}"
-  curl -fL --connect-timeout 20 --retry 3 -o "${tmp_zip}" "${zip_url}" \
-    || die "Download failed: ${zip_url}"
-  say "Unpacking into ${dest_dir}"
-  unzip -q -o "${tmp_zip}" -d /tmp/_czip
-  # Move contents (handle unknown top-level folder name)
-  local top="$(find /tmp/_czip -maxdepth 1 -mindepth 1 -type d | head -n1)"
-  [[ -d "$top" ]] || die "Unpack produced no folder?"
-  rsync -a --delete "${top}/" "${dest_dir}/"
-  rm -rf "${tmp_zip}" /tmp/_czip
-  ok "Fetched into ${dest_dir}"
-}
+say "Fetching Caelestia shell repo…"
+TMP_SHELL="$(mktemp -d)"
+git -c advice.detachedHead=false clone --depth=1 "$REPO_SHELL" "$TMP_SHELL" >&3 || die "Failed to clone $REPO_SHELL"
 
-install_shell_content() {
-  say "Fetching Caelestia Shell (QML config + assets)…"
-  fetch_and_unpack "${REPO_SHELL_ZIP}" "${QS_DIR}"
-  say "Fetching Caelestia Modules…"
-  fetch_and_unpack "${REPO_MODULES_ZIP}" "${QS_MOD_DIR}"
-}
+# Prefer a top-level shell.qml; otherwise copy all and hope layout matches upstream
+if [[ -f "$TMP_SHELL/shell.qml" ]]; then
+  rsync -a --delete "$TMP_SHELL"/ "$SHELL_DIR"/
+else
+  rsync -a --delete "$TMP_SHELL"/ "$SHELL_DIR"/
+fi
+ok "Installed shell to $SHELL_DIR"
+rm -rf "$TMP_SHELL"
 
-wire_hypr_autostart() {
-  if [[ -f "${HYPR_CONF}" ]]; then
-    say "Adding QuickShell autostart to Hyprland config…"
-    if ! grep -q 'quickshell -c caelestia' "${HYPR_CONF}"; then
-      printf '\n# Caelestia: autostart QuickShell\nexec-once = quickshell -c caelestia\n' \
-        >> "${HYPR_CONF}"
-      ok "Added exec-once to ${HYPR_CONF}"
-    else
-      ok "Hyprland exec-once already present."
-    fi
-    if ! grep -q 'bind = SUPER, S, exec, quickshell -c caelestia' "${HYPR_CONF}"; then
-      printf 'bind = SUPER, S, exec, quickshell -c caelestia\n' >> "${HYPR_CONF}"
-      ok "Added SUPER+S launcher."
+### ───────────────────── Caelestia modules (QML) ──────────────────────
+have_modules=0
+
+# 1) If the shell repo already contains a "modules" or "qml" dir with Caelestia types, use it.
+for d in "${CANDIDATE_MODULE_DIRS[@]}"; do
+  if [[ -d "$d" ]]; then
+    have_modules=1
+    ok "Found modules in: $d"
+    break
+  fi
+done
+
+# 2) Try to clone a public modules repo if it exists
+if [[ $have_modules -eq 0 ]]; then
+  if http_ok "$REPO_MODULES_GIT"; then
+    say "Attempting to clone Caelestia modules… (public repo detected)"
+    MODDIR="$SHELL_DIR/modules"
+    git clone --depth=1 "$REPO_MODULES_GIT" "$MODDIR" >&3 || true
+    if [[ -d "$MODDIR" ]]; then
+      have_modules=1
+      ok "Cloned modules to $MODDIR"
     fi
   else
-    warn "Hyprland config not found at ${HYPR_CONF}. Skipping autostart wiring."
+    warn "Modules git repo not reachable (likely private or removed)."
   fi
-}
+fi
 
-validate_quickshell() {
-  say "Validating QuickShell binary…"
-  quickshell -v || warn "quickshell -v had warnings."
-  say "Testing config load (dry run)…"
-  if quickshell -c caelestia --no-window >/dev/null 2>&1; then
-    ok "Caelestia config parse OK."
+# 3) Try codeload tarball (if it exists)
+if [[ $have_modules -eq 0 && $(http_ok "$REPO_MODULES_TARBALL"; echo $?) -eq 0 ]]; then
+  say "Downloading modules tarball…"
+  MODDIR="$SHELL_DIR/modules"
+  TMP_TAR="$(mktemp)"
+  curl -fsSL "$REPO_MODULES_TARBALL" -o "$TMP_TAR" || true
+  mkdir -p "$MODDIR"
+  # Unpack (guard for non-gzip)
+  if tar -tzf "$TMP_TAR" >/dev/null 2>&1; then
+    tar -xzf "$TMP_TAR" -C "$MODDIR" --strip-components=1
+    have_modules=1
+    ok "Extracted modules tarball to $MODDIR"
   else
-    warn "Parse test returned non-zero; will still try to run inside Wayland session."
+    warn "Downloaded file is not a valid gzip tarball (likely 404 HTML)."
   fi
-}
+  rm -f "$TMP_TAR"
+fi
 
-main() {
-  require_root_tools
-  check_network
-  fix_tmp
-  base_packages
-  install_yay
-  install_quickshell
-  reset_shell_dirs
-  install_shell_content
-  wire_hypr_autostart
-  validate_quickshell
+# 4) If still missing, create the directory and instruct user to drop modules later.
+if [[ $have_modules -eq 0 ]]; then
+  MODDIR="$SHELL_DIR/modules"
+  mkdir -p "$MODDIR"
+  warn "Caelestia modules are still missing. The shell **will not start** until they exist."
+  warn "→ Put the modules QML here: $MODDIR"
+  warn "   (If you get a ZIP/folder later, just extract/copy it into that path and re-run: quickshell -c caelestia)"
+fi
 
-  cat <<EOF
-
-====================================================
-[✓] All done.
-
-• If you're already in a Hyprland session, run:
-    quickshell -c caelestia
-
-• Otherwise, log into Hyprland (greetd/tuigreet/SDDM),
-  and Caelestia should autostart (we added exec-once).
-
-• Stocks widget you installed earlier still works.
-
-Log file: ${LOG}
-====================================================
+### ─────────────────────── launcher + autostart ───────────────────────
+say "Creating launcher: $LAUNCHER"
+mkdir -p "$(dirname "$LAUNCHER")"
+cat > "$LAUNCHER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+CFG="$HOME/.config/quickshell/caelestia"
+declare -a PATHS=(
+  "$CFG/modules"
+  "$CFG/qml"
+  "$CFG"
+)
+# Compose QML2_IMPORT_PATH with existing dirs
+IMP=""
+for p in "${PATHS[@]}"; do
+  [[ -d "$p" ]] && IMP="${IMP:+$IMP:}$p"
+done
+export QML2_IMPORT_PATH="$IMP"
+exec quickshell -c caelestia
 EOF
-}
+chmod +x "$LAUNCHER"
+ok "Launcher ready."
 
-main "$@"
+# Hyprland autostart (append if not present)
+HYPRD="$HOME/.config/hypr/hyprland.conf"
+mkdir -p "$(dirname "$HYPRD")"
+touch "$HYPRD"
+if ! grep -q 'exec-once\s*=.*caelestia-shell' "$HYPRD"; then
+  echo 'exec-once = caelestia-shell' >> "$HYPRD"
+  ok "Added Hyprland autostart (exec-once = caelestia-shell)"
+else
+  ok "Hyprland autostart already present."
+fi
+
+### ─────────────────────────── final message ──────────────────────────
+echo
+ok "Setup complete."
+echo "Log file: $LOGFILE"
+echo
+if [[ $have_modules -eq 0 ]]; then
+  warn "Modules missing. Until you drop the modules QML into:"
+  echo "      $SHELL_DIR/modules"
+  echo "the shell will show 'module Caelestia is not installed' errors."
+  echo
+  echo "When you obtain them (e.g., someone gives you a ZIP):"
+  echo "  1) Extract into $SHELL_DIR/modules"
+  echo "  2) Run:    quickshell -c caelestia"
+  echo "  3) Or re-login to Hyprland"
+else
+  ok "You can now start it inside Wayland/Hyprland:"
+  echo "    quickshell -c caelestia"
+  echo "Or just re-login; Hyprland will autostart it."
+fi

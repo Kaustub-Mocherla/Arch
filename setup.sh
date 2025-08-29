@@ -1,189 +1,246 @@
 #!/usr/bin/env bash
-# setup_caelestia.sh
-# One-shot installer/repairer for Hyprland + Caelestia (quickshell) on Arch
+# caelestia_reset_install.sh
+# Wipes old Caelestia bits, then reinstalls Caelestia Shell + Modules cleanly.
+# Designed for Arch + Hyprland with robust error handling and fallbacks.
 
-set -Eeuo pipefail
-IFS=$'\n\t'
-
-LOG="/var/log/caelestia_full_setup.log"
-mkdir -p "$(dirname "$LOG")" || true
-exec > >(tee -a "$LOG") 2>&1
-
-green(){ printf "\033[1;32m%s\033[0m\n" "$*"; }
-yellow(){ printf "\033[1;33m%s\033[0m\n" "$*"; }
-red(){ printf "\033[1;31m%s\033[0m\n" "$*"; }
-die(){ red "[x] $*"; exit 1; }
-
-need_root(){
-  if [[ $EUID -ne 0 ]]; then
-    die "Run this script with: sudo ./setup_caelestia.sh"
-  fi
-}
-
-need_internet(){
-  if ! ping -c1 -W2 archlinux.org >/dev/null 2>&1; then
-    yellow "[!] Internet looks down; trying 1.1.1.1"
-    ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 || die "No internet connectivity. Connect Wi-Fi/Ethernet and re-run."
-  fi
-  green "[✓] Internet OK"
-}
-
-fix_mirrors(){
-  yellow "[i] Refreshing pacman mirrors (reflector)..."
-  pacman -Sy --noconfirm reflector || true
-  if command -v reflector >/dev/null 2>&1; then
-    reflector --country 'India,United States,Singapore' \
-      --protocol https --sort rate --save /etc/pacman.d/mirrorlist || true
-    green "[✓] Mirrors refreshed (or kept as-is)"
-  else
-    yellow "[i] reflector not installed; continuing with current mirrors"
-  fi
-}
-
-pacman_install(){
-  local pkgs=("$@")
-  pacman -S --needed --noconfirm "${pkgs[@]}"
-}
-
-ensure_yay(){
-  if ! command -v yay >/dev/null 2>&1; then
-    yellow "[i] Installing yay (AUR helper)…"
-    pacman_install git base-devel || true
-    tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
-    pushd "$tmpdir" >/dev/null
-      sudo -u "$(logname)" git clone https://aur.archlinux.org/yay.git
-      chown -R "$(logname)":"$(logname)" yay
-      cd yay
-      sudo -u "$(logname)" makepkg -si --noconfirm
-    popd >/dev/null
-  fi
-  green "[✓] yay is ready"
-}
-
-install_pkg(){
-  # Try pacman first, fall back to yay for AUR-only packages
-  local pkg="$1"
-  if pacman -Si "$pkg" >/dev/null 2>&1; then
-    pacman_install "$pkg"
-  else
-    yellow "[i] $pkg not in repos, trying AUR via yay…"
-    sudo -u "$(logname)" yay -S --needed --noconfirm "$pkg" || die "Failed to install $pkg"
-  fi
-}
-
-ensure_user_dirs(){
-  local user home
-  user="$(logname)"
-  home="$(getent passwd "$user" | cut -d: -f6)"
-  mkdir -p "$home/.config" "$home/.local/bin" "$home/.config/quickshell" "$home/.config/hypr"
-  chown -R "$user":"$user" "$home/.config" "$home/.local"
-}
-
-clone_caelestia(){
-  local user home target
-  user="$(logname)"
-  home="$(getent passwd "$user" | cut -d: -f6)"
-  target="$home/.config/quickshell/caelestia"
-  if [[ -d "$target/.git" ]]; then
-    yellow "[i] Updating existing Caelestia clone…"
-    sudo -u "$user" git -C "$target" pull --rebase || true
-  else
-    yellow "[i] Cloning Caelestia shell…"
-    sudo -u "$user" git clone --depth=1 https://github.com/caelestia-dots/shell "$target"
-  fi
-  chown -R "$user":"$user" "$target"
-  green "[✓] Caelestia shell ready at $target"
-}
-
-wire_hyprland_autostart(){
-  local user home hyprconf
-  user="$(logname)"
-  home="$(getent passwd "$user" | cut -d: -f6)"
-  hyprconf="$home/.config/hypr/hyprland.conf"
-
-  touch "$hyprconf"
-  chown "$user":"$user" "$hyprconf"
-
-  # Remove previous lines we manage
-  sudo -u "$user" sed -i '/# CAELESTIA-BEGIN/,/# CAELESTIA-END/d' "$hyprconf" || true
-
-  cat <<'HYPR' | sudo -u "$user" tee -a "$hyprconf" >/dev/null
-# CAELESTIA-BEGIN (managed by setup_caelestia.sh)
-env = XDG_CURRENT_DESKTOP,Hyprland
-env = QT_QPA_PLATFORM,wayland
-env = QT_WAYLAND_DISABLE_WINDOWDECORATION,1
-env = GDK_BACKEND,wayland,x11
-env = SDL_VIDEODRIVER,wayland
-
-# Make sure portals exist for file pickers / screenshots
-exec-once = /usr/lib/xdg-desktop-portal-hyprland & sleep 1 && /usr/lib/xdg-desktop-portal &
-
-# Start the Quickshell Caelestia shell
-exec-once = qs -c caelestia
-# CAELESTIA-END
-HYPR
-
-  green "[✓] Hyprland will autostart Caelestia (qs -c caelestia)"
-}
-
-make_manual_launcher(){
-  local user home
-  user="$(logname)"
-  home="$(getent passwd "$user" | cut -d: -f6)"
-
-  cat <<'EOS' | tee /usr/local/bin/caelestia-run >/dev/null
-#!/usr/bin/env bash
 set -euo pipefail
-export QT_QPA_PLATFORM=wayland
-export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
-export GDK_BACKEND=wayland,x11
-exec qs -c caelestia
-EOS
-  chmod +x /usr/local/bin/caelestia-run
-  green "[✓] Manual launcher: caelestia-run"
-}
 
-main(){
-  need_root
-  need_internet
-  fix_mirrors
+# ---------------------------- Config / Vars ----------------------------
+LOG="$HOME/caelestia_reset_$(date +%Y%m%d_%H%M%S).log"
 
-  yellow "[i] System update…"
-  pacman -Syu --noconfirm
+SHELL_REPO="https://github.com/caelestia-dots/shell.git"
+MODULES_REPO="https://github.com/caelestia-dots/modules.git"
 
-  # Essentials from repos
-  pacman_install \
-    hyprland kitty git curl wget networkmanager \
-    qt6-wayland qt6-svg qt6-declarative \
-    xdg-desktop-portal xdg-desktop-portal-hyprland
+# Reliable GitHub tarball endpoints (avoid 404 HTML):
+MODULES_TARBALL_1="https://codeload.github.com/caelestia-dots/modules/tar.gz/refs/heads/main"
+MODULES_TARBALL_2="https://codeload.github.com/caelestia-dots/modules/tar.gz/refs/heads/master"
 
-  systemctl enable --now NetworkManager || true
+QS_DIR="$HOME/.config/quickshell"
+SHELL_DIR="$QS_DIR/caelestia"
+MODULES_DIR="$SHELL_DIR/modules"
 
-  ensure_yay
+BIN_DIR="$HOME/.local/bin"
+LAUNCHER="$BIN_DIR/caelestia-shell"
 
-  # AUR / special packages
-  install_pkg quickshell
-  # In case user mirrors didn’t have this in repo
-  if ! pacman -Qi qt6-quickcontrols2 >/dev/null 2>&1; then
-    install_pkg qt6-quickcontrols2
+HYPR_DIR="$HOME/.config/hypr"
+HYPR_CONF="$HYPR_DIR/hyprland.conf"
+
+# ---------------------------- Helpers ----------------------------
+info(){ printf "\033[1;36m[i]\033[0m %s\n" "$*" | tee -a "$LOG"; }
+ok(){   printf "\033[1;32m[v]\033[0m %s\n" "$*" | tee -a "$LOG"; }
+warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*" | tee -a "$LOG"; }
+err(){  printf "\033[1;31m[x]\033[0m %s\n" "$*" | tee -a "$LOG"; }
+
+need_cmd(){ command -v "$1" >/dev/null 2>&1; }
+
+ensure_sudo(){
+  if [[ $EUID -ne 0 ]]; then
+    if need_cmd sudo; then SUDO="sudo"; else
+      err "sudo not found. Install sudo or run this script as root."
+      exit 1
+    fi
+  else
+    SUDO=""
   fi
-
-  ensure_user_dirs
-  clone_caelestia
-  wire_hyprland_autostart
-  make_manual_launcher
-
-  green ""
-  green "=============================================="
-  green "  All done. Reboot, log into **Hyprland**."
-  green "  Caelestia should appear automatically."
-  green ""
-  green "  If something goes wrong in-session:"
-  green "    Super+Q (or open kitty) and run:  caelestia-run"
-  green ""
-  green "  Full log: $LOG"
-  green "=============================================="
 }
 
-main "$@"
+# Return 0 if a path contains non-HTML gzip tar
+is_good_tarball(){
+  local file="$1"
+  file "$file" | grep -qi 'gzip compressed data'
+}
+
+# ---------------------------- Phase 0: Prep ----------------------------
+: > "$LOG"
+info "=== Caelestia full RESET + INSTALL started ==="
+ensure_sudo
+
+# ---------------------------- Phase 1: Package layer ----------------------------
+info "Installing/updating required packages (pacman)…"
+$SUDO pacman -Sy --noconfirm --needed \
+  git curl unzip tar \
+  quickshell \
+  qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
+  hyprland kitty wl-clipboard \
+  pipewire wireplumber || {
+    err "pacman failed. Check mirrors/network."
+    exit 1
+  }
+ok "Packages installed (or already present)."
+
+# ---------------------------- Phase 2: Stop + clean old state ----------------------------
+info "Stopping any running quickshell (best-effort)…"
+pkill -x quickshell >/dev/null 2>&1 || true
+
+# Back up then wipe old Caelestia dirs
+BACKUP_TGZ="$HOME/caelestia_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+if [[ -d "$SHELL_DIR" || -d "$MODULES_DIR" ]]; then
+  info "Backing up existing Caelestia config to: $BACKUP_TGZ"
+  tar -czf "$BACKUP_TGZ" -C "$QS_DIR" "$(basename "$SHELL_DIR")" || true
+fi
+
+info "Removing old Caelestia directories and caches…"
+rm -rf "$MODULES_DIR" "$SHELL_DIR" "$HOME/.cache/quickshell" "$HOME/.local/share/quickshell" || true
+mkdir -p "$SHELL_DIR"
+
+# Remove old launcher
+rm -f "$LAUNCHER" || true
+
+# Clean hyprland exec-once duplicates
+if [[ -f "$HYPR_CONF" ]]; then
+  info "Cleaning old 'exec-once = quickshell -c caelestia' entries from hyprland.conf…"
+  sed -i '/^\s*exec-once\s*=\s*quickshell\s\+-c\s\+caelestia\s*$/d' "$HYPR_CONF" || true
+fi
+
+# ---------------------------- Phase 3: Clone Caelestia Shell ----------------------------
+info "Cloning Caelestia Shell…"
+TMP_SHELL="$(mktemp -d)"
+# Avoid any credential helpers asking for username/password
+git -c credential.helper= -c http.sslVerify=true clone --depth=1 "$SHELL_REPO" "$TMP_SHELL" \
+  || { err "Failed to clone Caelestia Shell."; exit 1; }
+
+shopt -s dotglob nullglob
+cp -r "$TMP_SHELL"/* "$SHELL_DIR"/
+rm -rf "$TMP_SHELL"
+ok "Shell installed to $SHELL_DIR"
+
+# ---------------------------- Phase 4: Fetch Caelestia Modules ----------------------------
+fetch_modules_git(){
+  info "Trying 'git clone' for modules…"
+  rm -rf "$MODULES_DIR"
+  git -c credential.helper= -c http.sslVerify=true clone --depth=1 "$MODULES_REPO" "$MODULES_DIR"
+}
+
+fetch_modules_tarball(){
+  local url="$1"
+  info "Trying tarball: $url"
+  rm -rf "$MODULES_DIR"; mkdir -p "$MODULES_DIR"
+  TMP_TAR="$(mktemp)"
+  if ! curl -fsSL "$url" -o "$TMP_TAR"; then
+    warn "Download failed for $url"
+    return 1
+  fi
+  if ! is_good_tarball "$TMP_TAR"; then
+    warn "Tarball wasn’t gzip (likely 404/HTML)."
+    rm -f "$TMP_TAR"
+    return 1
+  fi
+  TMP_DIR="$(mktemp -d)"
+  tar -xzf "$TMP_TAR" -C "$TMP_DIR"
+  # copy inner folder contents into MODULES_DIR
+  local inner
+  inner="$(find "$TMP_DIR" -maxdepth 1 -type d -name 'modules-*' -print -quit)"
+  [[ -z "$inner" ]] && inner="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  if [[ -n "$inner" ]]; then
+    cp -r "$inner/"* "$MODULES_DIR"/ || true
+  else
+    warn "Couldn’t locate extracted inner directory."
+    rm -rf "$TMP_DIR" "$TMP_TAR"
+    return 1
+  fi
+  rm -rf "$TMP_DIR" "$TMP_TAR"
+  return 0
+}
+
+create_stub_modules(){
+  warn "Could not fetch real modules. Creating minimal stub modules so Quickshell can run."
+  mkdir -p "$MODULES_DIR/background" "$MODULES_DIR/components/filedialog" "$MODULES_DIR/components/images"
+
+  cat > "$MODULES_DIR/background/Background.qml" <<'QML'
+import QtQuick 2.15
+Item { anchors.fill: parent; Rectangle{anchors.fill: parent; color:"#111417"} }
+QML
+
+  cat > "$MODULES_DIR/background/Wallpaper.qml" <<'QML'
+import QtQuick 2.15
+Item {
+  anchors.fill: parent
+  property url source: "file://" + Qt.resolvedUrl("../../wall.jpg")
+  Image { anchors.fill: parent; source: root.source; fillMode: Image.PreserveAspectCrop; cache:true; smooth:true; visible: status!==Image.Error }
+}
+QML
+
+  cat > "$MODULES_DIR/components/filedialog/FileDialog.qml" <<'QML'
+import QtQuick 2.15
+Item { /* stub */ }
+QML
+
+  cat > "$MODULES_DIR/components/filedialog/FolderContents.qml" <<'QML'
+import QtQuick 2.15
+ListModel { /* stub */ }
+QML
+
+  cat > "$MODULES_DIR/components/images/CachingIconImage.qml" <<'QML'
+import QtQuick 2.15
+Image { cache:true; smooth:true }
+QML
+
+  cat > "$MODULES_DIR/components/images/CachingImage.qml" <<'QML'
+import QtQuick 2.15
+Image { cache:true; smooth:true }
+QML
+  ok "Stub modules created at $MODULES_DIR"
+}
+
+info "Fetching Caelestia Modules…"
+if fetch_modules_git 2>>"$LOG"; then
+  ok "Modules cloned via git."
+else
+  warn "Git clone failed (no prompts will be shown; we disabled credential helpers)."
+  if fetch_modules_tarball "$MODULES_TARBALL_1" 2>>"$LOG"; then
+    ok "Modules installed via tarball (main)."
+  elif fetch_modules_tarball "$MODULES_TARBALL_2" 2>>"$LOG"; then
+    ok "Modules installed via tarball (master)."
+  else
+    create_stub_modules
+  fi
+fi
+
+# ---------------------------- Phase 5: Launcher + PATH ----------------------------
+info "Installing launcher…"
+mkdir -p "$BIN_DIR"
+cat > "$LAUNCHER" <<'SH'
+#!/usr/bin/env bash
+exec quickshell -c caelestia
+SH
+chmod +x "$LAUNCHER"
+
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+  [[ -f "$rc" ]] || continue
+  grep -q '.local/bin' "$rc" || printf '\n# Ensure user bin on PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+done
+ok "Launcher installed: $LAUNCHER (re-source your shell if needed)."
+
+# ---------------------------- Phase 6: Hyprland autostart ----------------------------
+info "Wiring Hyprland autostart…"
+mkdir -p "$HYPR_DIR"
+touch "$HYPR_CONF"
+grep -q 'exec-once *= *quickshell -c caelestia' "$HYPR_CONF" || \
+  printf '\n# Auto-start Caelestia\nexec-once = quickshell -c caelestia\n' >> "$HYPR_CONF"
+ok "Hyprland will auto-start Caelestia on next login."
+
+# ---------------------------- Phase 7: Done ----------------------------
+ok "RESET + INSTALL complete."
+
+cat <<EOF | tee -a "$LOG"
+
+What next:
+
+1) Log in to **Hyprland** (Wayland). Caelestia should start automatically.
+2) If you’re already inside Hyprland, open a terminal and run:
+     quickshell -c caelestia
+   or use the launcher:
+     caelestia-shell
+
+If you still get a black/triangle splash:
+  - Run: quickshell -c caelestia  (to see live errors)
+  - Check the log: $LOG
+
+Notes:
+• Real modules are in: $MODULES_DIR
+• If we used stub modules, you can later replace them by re-running this script when
+  https://github.com/caelestia-dots/modules is reachable.
+• Optional wallpaper: put an image at $SHELL_DIR/wall.jpg
+
+Backup (old config) stored at: ${BACKUP_TGZ}
+EOF

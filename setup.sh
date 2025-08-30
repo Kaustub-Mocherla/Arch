@@ -1,171 +1,199 @@
 #!/usr/bin/env bash
+# Caelestia: one-shot installer/repairer for the Caelestia UI (quickshell)
+# - Clones FULL git history & tags (fixes: "VERSION is not set and failed to get from git")
+# - Builds Caelestia Shell with CMake+Ninja
+# - Copies Caelestia modules and sets QML2_IMPORT_PATH
+# - Creates a 'caelestia-shell' launcher
+# - Adds Hyprland exec-once so it autostarts next login
+# Run as your normal user. You'll be prompted for sudo when needed.
+
 set -Eeuo pipefail
 
-LOG="$HOME/caelestia_fix.log"
-exec > >(tee -a "$LOG") 2>&1
+### ---- pretty prints ----
+c() { printf "\033[1;36m%s\033[0m\n" "$*"; }  # cyan
+g() { printf "\033[1;32m%s\033[0m\n" "$*"; }  # green
+y() { printf "\033[1;33m%s\033[0m\n" "$*"; }  # yellow
+r() { printf "\033[1;31m%s\033[0m\n" "$*"; }  # red
 
-say() { printf "\033[1;36m[i]\033[0m %s\n" "$*"; }
-ok()  { printf "\033[1;32m[v]\033[0m %s\n" "$*"; }
-warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*"; }
-err() { printf "\033[1;31m[x]\033[0m %s\n" "$*" >&2; }
+### ---- variables ----
+MAIN_REPO="https://github.com/caelestia-dots/caelestia.git"
+SHELL_REPO="https://github.com/caelestia-dots/shell.git"
 
-need_cmd() { command -v "$1" >/dev/null 2>&1; }
+# where we keep clean clones to build from (with full history & tags)
+SRC_DIR="${HOME}/.cache/caelestia-src"
+SHELL_SRC="${SRC_DIR}/shell"
+MAIN_SRC="${SRC_DIR}/caelestia"
 
-# 0) quick sanity
-if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
-  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-fi
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+# quickshell runtime config dir
+QS_CFG_DIR="${HOME}/.config/quickshell"
+CAE_CFG_DIR="${QS_CFG_DIR}/caelestia"
+MODULES_DIR="${CAE_CFG_DIR}/modules"
 
-say "Starting Caelestia full reset + install. Log: $LOG"
+# local “install” locations for user (no root)
+QML_DIR="${HOME}/.local/share/qt6/qml"
+LIB_DIR="${HOME}/.local/lib"
 
-# 1) pacman deps
-say "Installing base dependencies (pacman)…"
-sudo pacman -Sy --needed --noconfirm \
-  base-devel git curl unzip tar cmake ninja \
-  qt6-base qt6-declarative qt6-svg qt6-wayland \
-  glibc gcc-libs \
-  hyprland kitty wl-clipboard pipewire wireplumber \
-  swappy brightnessctl ddcutil lm_sensors libqalculate cava || {
-    err "pacman failed (check mirrors/network)."; exit 1; }
-ok "Base deps installed."
+LAUNCH_DIR="${HOME}/.local/bin"
+LAUNCHER="${LAUNCH_DIR}/caelestia-shell"
 
-# 2) AUR helper (yay)
-if ! need_cmd yay; then
-  say "Installing AUR helper (yay)…"
-  workdir="$(mktemp -d)"
-  pushd "$workdir" >/dev/null
-  git clone --depth=1 https://aur.archlinux.org/yay.git
-  cd yay
-  makepkg -si --noconfirm
-  popd >/dev/null
-  rm -rf "$workdir"
-  ok "yay installed."
+HYPR_DIR="${HOME}/.config/hypr"
+HYPR_USER_CONF="${HYPR_DIR}/hyprland.conf"           # common name
+HYPR_USER_ALT="${HYPR_DIR}/hypr.conf"                # alt name; we’ll patch whichever exists
+
+LOG="/var/log/caelestia_one_shot.log"
+mkdir -p "$(dirname "$LOG")" || true
+
+trap 'r "[x] Failed. See: $LOG"' ERR
+
+logrun() { # tee both console and log
+  { echo -e "\n==> $*"; "$@"; } 2>&1 | tee -a "$LOG"
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { y "[i] Installing missing: $1"; return 1; }
+}
+
+### ---- 0) pacman deps (quickshell & build toolchain) ----
+c "== Installing/updating required packages (pacman) =="
+sudo true >/dev/null 2>&1 || true
+
+# Base build + qt6 pieces + Hyprland + terminal + tooling
+PKGS=(
+  git cmake ninja base-devel curl unzip tar
+  qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools
+  hyprland kitty pipewire wireplumber wl-clipboard
+  # quickshell (if available from your repos)
+  quickshell
+)
+
+if ! sudo pacman -Syu --needed --noconfirm "${PKGS[@]}" 2>&1 | tee -a "$LOG" | grep -qi "error: target not found: quickshell"; then
+  :
 else
-  ok "yay already present."
+  y "[!] 'quickshell' not in your pacman repos. If you don’t already have it, install via AUR (quickshell-bin/quickshell-git) with yay/paru, or install from source separately."
 fi
 
-# 3) AUR packages: quickshell (git) + caelestia-cli
-say "Installing AUR packages (quickshell-git, caelestia-cli)…"
-yay -S --needed --noconfirm quickshell-git caelestia-cli || {
-  err "Failed installing AUR packages."; exit 1; }
-ok "AUR packages installed."
+### ---- 1) ensure dirs ----
+mkdir -p "$SRC_DIR" "$CAE_CFG_DIR" "$MODULES_DIR" "$LAUNCH_DIR" "$QML_DIR" "$LIB_DIR"
 
-# 4) Clean old local installs/config (keep Hyprland config)
-say "Cleaning previous local Caelestia/QuickShell config (safe)…"
-rm -rf "$XDG_CONFIG_HOME/quickshell/caelestia" || true
-# keep hyprland conf; only ensure exec-once is (re-)added later.
-ok "Old Caelestia config removed."
+### ---- 2) fresh FULL clone of repos (with tags) ----
+c "== Fetching Caelestia repos (FULL clone, no depth) =="
+# main (optional modules/examples)
+if [ ! -d "$MAIN_SRC/.git" ]; then
+  logrun git clone "$MAIN_REPO" "$MAIN_SRC"
+else
+  (cd "$MAIN_SRC" && logrun git fetch --all --tags && logrun git reset --hard origin/HEAD)
+fi
 
-# 5) Clone + build Caelestia shell (local user install)
-SRC_DIR="$HOME/.cache/caelestia-src"
-INSTALL_QML="$HOME/.local/share/qt6/qml"
-INSTALL_LIB="$HOME/.local/lib"
-INSTALL_QSCONF="$XDG_CONFIG_HOME/quickshell/caelestia"
+# shell (must be full to get tags for version)
+if [ ! -d "$SHELL_SRC/.git" ]; then
+  logrun git clone "$SHELL_REPO" "$SHELL_SRC"
+else
+  (cd "$SHELL_SRC" && logrun git fetch --all --tags && logrun git reset --hard origin/HEAD)
+fi
+# make sure tags exist (fixes: VERSION is not set…)
+(cd "$SHELL_SRC" && logrun git fetch --tags)
 
-mkdir -p "$SRC_DIR" "$INSTALL_QML" "$INSTALL_LIB" "$INSTALL_QSCONF" "$HOME/.local/bin"
+### ---- 3) build & install Caelestia shell (user-local) ----
+c "== Building Caelestia shell (CMake + Ninja) =="
+BUILD_DIR="$SHELL_SRC/build"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+(
+  cd "$SHELL_SRC"
+  logrun cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/ \
+    -DINSTALL_QMLDIR="$QML_DIR" \
+    -DINSTALL_LIBDIR="$LIB_DIR" \
+    -DINSTALL_QSCONFDIR="$CAE_CFG_DIR"
+  logrun cmake --build build
+  logrun cmake --install build
+)
 
-say "Cloning caelestia-dots/shell…"
-rm -rf "$SRC_DIR/shell"
-git clone --depth=1 https://github.com/caelestia-dots/shell.git "$SRC_DIR/shell" || {
-  err "Clone failed."; exit 1; }
-ok "Repo cloned."
+### ---- 4) copy modules into QuickShell config ----
+# The shell repo includes a top-level 'modules' folder. Use that if present.
+c "== Copying Caelestia modules =="
+if [ -d "$SHELL_SRC/modules" ]; then
+  rsync -a --delete "$SHELL_SRC/modules/" "$MODULES_DIR/" | tee -a "$LOG"
+  g "[v] Using modules from shell repo."
+elif [ -d "$MAIN_SRC/modules" ]; then
+  rsync -a --delete "$MAIN_SRC/modules/" "$MODULES_DIR/" | tee -a "$LOG"
+  g "[v] Using modules from main repo."
+else
+  r "[x] No 'modules/' folder found in either repo. The shell can’t load its QML types."
+  exit 1
+fi
 
-say "Building Caelestia shell (CMake + Ninja)…"
-pushd "$SRC_DIR/shell" >/dev/null
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/ \
-  -DINSTALL_QMLDIR="$INSTALL_QML" \
-  -DINSTALL_LIBDIR="$INSTALL_LIB" \
-  -DINSTALL_QSCONFDIR="$INSTALL_QSCONF"
+### ---- 5) ensure shell.qml exists (installed by step 3) ----
+if [ ! -f "$CAE_CFG_DIR/shell.qml" ]; then
+  r "[x] shell.qml not found at $CAE_CFG_DIR/shell.qml (install step should have placed it)."
+  r "   Check the build log in $LOG."
+  exit 1
+fi
 
-cmake --build build
-cmake --install build  # installs into $HOME paths above because we set dirs
-popd >/dev/null
-ok "Caelestia shell built and installed to user prefix."
-
-# 6) Launcher script
-LAUNCHER="$HOME/.local/bin/caelestia-shell"
+### ---- 6) launcher that sets QML2_IMPORT_PATH and runs quickshell ----
+c "== Creating 'caelestia-shell' launcher =="
 cat > "$LAUNCHER" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-# Ensure user-local QML + libs are visible
-export QML2_IMPORT_PATH="$HOME/.local/share/qt6/qml:${QML2_IMPORT_PATH:-}"
-export QML_IMPORT_PATH="$QML2_IMPORT_PATH"
-export LD_LIBRARY_PATH="$HOME/.local/lib:${LD_LIBRARY_PATH:-}"
-# Prefer the CLI launcher if available (enables IPC etc.), else fall back to qs
-if command -v caelestia >/dev/null 2>&1; then
-  exec caelestia shell -d
-else
-  exec qs -c caelestia
-fi
+CFG="${HOME}/.config/quickshell/caelestia/shell.qml"
+MOD="${HOME}/.config/quickshell/caelestia/modules"
+export QML2_IMPORT_PATH="${MOD}${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+exec quickshell -c "$CFG"
 EOF
 chmod +x "$LAUNCHER"
-ok "Launcher created: $LAUNCHER"
 
-# 7) Ensure ~/.local/bin is on PATH for interactive shells
-PROFILE_FILE="$HOME/.profile"
-if ! grep -qs 'PATH=.*\.local/bin' "$PROFILE_FILE"; then
-  say "Adding ~/.local/bin to PATH in $PROFILE_FILE…"
-  {
-    echo ''
-    echo '# Added by Caelestia installer'
-    echo 'export PATH="$HOME/.local/bin:$PATH"'
-  } >> "$PROFILE_FILE"
-fi
-ok "~/.local/bin will be in PATH next login (source ~/.profile to load now)."
-
-# 8) Add Hyprland autostart (idempotent)
-HYPRCONF="$XDG_CONFIG_HOME/hypr/hyprland.conf"
-mkdir -p "$(dirname "$HYPRCONF")"
-if [[ -f "$HYPRCONF" ]]; then
-  if ! grep -qs 'exec-once *=.*caelestia-shell' "$HYPRCONF"; then
-    say "Adding Caelestia autostart to Hyprland config…"
-    printf '\n# Caelestia autostart\nexec-once = %s\n' "$LAUNCHER" >> "$HYPRCONF"
-  else
-    ok "Hyprland autostart already present."
+# Also add ~/.local/bin to PATH if not already in user shells
+for f in "${HOME}/.profile" "${HOME}/.bash_profile" "${HOME}/.zprofile"; do
+  [ -f "$f" ] || continue
+  if ! grep -q 'PATH=.*/.local/bin' "$f"; then
+    printf '\n# add user bin to path for Caelestia\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$f"
   fi
-else
-  say "Creating Hyprland config with Caelestia autostart…"
-  cat > "$HYPRCONF" <<EOF
-# Minimal Hyprland config
-monitor=,preferred,auto,1
-exec-once = $LAUNCHER
-EOF
-fi
-ok "Hyprland configured."
+done
 
-# 9) QuickShell headless check (we can't truly run Wayland here)
-say "Verifying QuickShell binary…"
-if ! command -v qs >/dev/null 2>&1; then
-  err "qs (quickshell) not found in PATH. Check quickshell-git installation."
+### ---- 7) Hyprland autostart (exec-once) ----
+c "== Adding Hyprland exec-once autostart =="
+TARGET_CONF=""
+if [ -f "$HYPR_USER_CONF" ]; then TARGET_CONF="$HYPR_USER_CONF"; fi
+if [ -z "$TARGET_CONF" ] && [ -f "$HYPR_USER_ALT" ]; then TARGET_CONF="$HYPR_USER_ALT"; fi
+
+mkdir -p "$HYPR_DIR"
+if [ -z "$TARGET_CONF" ]; then
+  TARGET_CONF="$HYPR_USER_CONF"
+  touch "$TARGET_CONF"
+fi
+
+if ! grep -q 'exec-once *= *quickshell -c.*caelestia/shell.qml' "$TARGET_CONF"; then
+  printf '\n# Autostart Caelestia (QuickShell)\nexec-once = quickshell -c ~/.config/quickshell/caelestia/shell.qml\n' >> "$TARGET_CONF"
+  g "[v] Added exec-once to: $TARGET_CONF"
+else
+  g "[v] Autostart already present in: $TARGET_CONF"
+fi
+
+### ---- 8) quick sanity check (headless) ----
+c "== Verifying QuickShell can find Caelestia types (headless dry-run) =="
+# We intentionally avoid QT_QPA_PLATFORM=xcb at TTY, but we can at least confirm the config path exists.
+if command -v quickshell >/dev/null 2>&1; then
+  y "[i] If you’re on a black/triangle splash: press Super+Enter to open kitty, then run: caelestia-shell"
+  y "[i] Inside a Wayland session (Hyprland), you can run directly: caelestia-shell"
+else
+  r "[x] quickshell not installed. Install via pacman (if available) or AUR (quickshell-bin/quickshell-git)."
   exit 1
 fi
-ok "qs present."
 
-# 10) Final tips
-ok "All set."
-cat <<'TIP'
+g "[v] All set."
 
-To start Caelestia shell:
+cat <<TIP
 
-  1) Log into a Wayland session with Hyprland (your greeter will have Hyprland).
-  2) It should autostart. If you see only the Hyprland splash triangles,
-     press Super+Enter (opens kitty), then run:
-         caelestia-shell
+To start Caelestia **now** (inside Hyprland/Wayland), run:
+  caelestia-shell
 
-Useful:
+Hyprland will also **autostart** Caelestia next login because we added:
+  exec-once = quickshell -c ~/.config/quickshell/caelestia/shell.qml
 
-  - Logs:  ~/caelestia_fix.log
-  - Config: ~/.config/quickshell/caelestia
-  - If fonts look off, install:
-        yay -S ttf-caskaydia-cove-nerd ttf-material-symbols
+If you only see the splash triangles, press:
+  Super + Enter   (opens kitty)
+then run:
+  caelestia-shell
 
-If you *still* see “module 'Caelestia' is not installed”, run this in a terminal
-(after logging into Hyprland), to ensure QML path is visible:
-
-    export QML2_IMPORT_PATH="$HOME/.local/share/qt6/qml:$QML2_IMPORT_PATH"
-    export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
-    caelestia-shell
-
+Log: $LOG
 TIP

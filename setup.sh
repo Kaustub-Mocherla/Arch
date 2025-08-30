@@ -1,160 +1,216 @@
 #!/usr/bin/env bash
-# Caelestia full (re)install for Arch + Hyprland + QuickShell
-# Uses:
-#   - Shell UI: https://github.com/caelestia-dots/shell
-#   - QML Modules: https://github.com/caelestia-dots/caelestia
-#
-# Safe to re-run. Logs saved to ~/.local/share/caelestia-install/installer.log
+# Caelestia: full reset + install (shell UI from caelestia-dots/shell)
+# Safe to re-run. Tries hard, logs everything, and won’t break your user config outside Caelestia.
 
-set -Eeuo pipefail
-
-### ───────────────────────────── Config ─────────────────────────────
-LOGDIR="$HOME/.local/share/caelestia-install"
-LOGFILE="$LOGDIR/installer.log"
-
-SHELL_DIR="$HOME/.config/quickshell/caelestia"              # active shell
-MODULES_DIR="$SHELL_DIR/modules"                            # where we place Caelestia QML
-LAUNCHER="$HOME/.local/bin/caelestia-shell"                 # command to launch
-HYPRCONF="$HOME/.config/hypr/hyprland.conf"
-
-REPO_SHELL="https://github.com/caelestia-dots/shell"
-REPO_CAEL="https://github.com/caelestia-dots/caelestia"
-
-### ─────────────────────────── Logging utils ────────────────────────
-mkdir -p "$LOGDIR"
-exec 3>>"$LOGFILE"
-ts() { date +"%Y-%m-%d %H:%M:%S"; }
-say()  { printf "\e[36m[+] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; }
-ok()   { printf "\e[32m[✓] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; }
-warn() { printf "\e[33m[!] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; }
-die()  { printf "\e[31m[x] %s\e[0m %s\n" "$(ts)" "$*" | tee /dev/fd/3; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1; }
-as_root() { command -v sudo >/dev/null 2>&1 || die "sudo not found. Install sudo & add your user to wheel."; sudo bash -c "$*"; }
-
-### ───────────────────────── Network sanity ─────────────────────────
-say "Checking internet…"
-if ! ping -c 1 -W 2 archlinux.org >/dev/null 2>&1; then
-  warn "Ping to archlinux.org failed; continuing (mirrors might still work)."
-else
-  ok "Network OK."
-fi
-
-### ───────────────────── System packages (pacman) ───────────────────
-say "Syncing pacman & installing base packages…"
-as_root "pacman -Sy --noconfirm archlinux-keyring || true"
-as_root "pacman -Syu --noconfirm"
-
-# Core & graphics & Qt6
-as_root "pacman -S --needed --noconfirm \
-  git base-devel curl unzip rsync sed grep \
-  mesa libva-mesa-driver vulkan-radeon \
-  qt6-base qt6-declarative qt6-svg qt6-shadertools qt6-wayland qt6-quickcontrols2 \
-  hyprland kitty pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber"
-
-ok "Core packages installed."
-
-### ─────────────────── AUR helper (paru/yay) ────────────────────────
-AUR=""
-if need paru; then AUR="paru"
-elif need yay; then AUR="yay"
-else
-  say "No AUR helper found; installing paru-bin (non-root build)…"
-  WORK="$HOME/.cache/aur/paru-bin"
-  rm -rf "$WORK"; mkdir -p "$WORK"
-  git clone --depth=1 https://aur.archlinux.org/paru-bin.git "$WORK" >&3
-  ( cd "$WORK" && makepkg -si --noconfirm ) >&3
-  AUR="paru"
-fi
-ok "AUR helper: $AUR"
-
-### ───────────────────── QuickShell (AUR) ───────────────────────────
-if ! need quickshell; then
-  say "Installing QuickShell…"
-  $AUR -S --noconfirm quickshell-bin || $AUR -S --noconfirm quickshell || die "Could not install quickshell."
-else
-  ok "QuickShell already present."
-fi
-
-### ───────────────────── Install Caelestia shell UI ─────────────────
-say "Installing Caelestia shell (UI)…"
-TMP_SHELL="$(mktemp -d)"
-if [[ -d "$SHELL_DIR" ]]; then
-  BAK="${SHELL_DIR}.bak.$(date +%s)"
-  mv "$SHELL_DIR" "$BAK"
-  ok "Backed up previous shell to $BAK"
-fi
-git -c advice.detachedHead=false clone --depth=1 "$REPO_SHELL" "$TMP_SHELL" >&3 || die "Failed to clone $REPO_SHELL"
-mkdir -p "$SHELL_DIR"
-rsync -a --delete "$TMP_SHELL"/ "$SHELL_DIR"/
-rm -rf "$TMP_SHELL"
-ok "Shell files installed to $SHELL_DIR"
-
-### ───────────────────── Install Caelestia QML (modules) ────────────
-say "Installing Caelestia QML modules…"
-TMP_MOD="$(mktemp -d)"
-git -c advice.detachedHead=false clone --depth=1 "$REPO_CAEL" "$TMP_MOD" >&3 || die "Failed to clone $REPO_CAEL"
-
-# Try common layouts: use repo root by default (contains QML packages), falling back to subdirs
-SRC_QML=""
-for CAND in "$TMP_MOD/qml" "$TMP_MOD/modules" "$TMP_MOD/src" "$TMP_MOD"; do
-  if find "$CAND" -maxdepth 1 -type d -iname "Caelestia"* | head -n1 >/dev/null 2>&1; then
-    SRC_QML="$CAND"
-    break
-  fi
-done
-[[ -z "$SRC_QML" ]] && SRC_QML="$TMP_MOD"
-
-rm -rf "$MODULES_DIR"
-mkdir -p "$MODULES_DIR"
-rsync -a "$SRC_QML"/ "$MODULES_DIR"/
-rm -rf "$TMP_MOD"
-ok "QML modules placed at $MODULES_DIR"
-
-### ───────────────────── Launcher + env wiring ───────────────────────
-say "Creating launcher: $LAUNCHER"
-mkdir -p "$(dirname "$LAUNCHER")"
-cat > "$LAUNCHER" <<'EOF'
-#!/usr/bin/env bash
 set -euo pipefail
-CFG="$HOME/.config/quickshell/caelestia"
-# Build QML import path so QuickShell finds Caelestia types
-declare -a PATHS=(
-  "$CFG/modules"
-  "$CFG/qml"
-  "$CFG"
-  "$HOME/.config/quickshell"
-)
-IMP=""
-for p in "${PATHS[@]}"; do
-  [[ -d "$p" ]] && IMP="${IMP:+$IMP:}$p"
-done
-export QML2_IMPORT_PATH="$IMP"
-exec quickshell -c caelestia
+
+# ----------------------------- Config ---------------------------------
+CAEL_REPO="https://github.com/caelestia-dots/caelestia"
+SHELL_REPO="https://github.com/caelestia-dots/shell"
+LOGFILE="${HOME}/caelestia_one_shot.log"
+QS_DESKTOP_ENTRY="/usr/share/applications/quickshell.desktop" # signal QuickShell install
+HYPR_CONF_DIR="${HOME}/.config/hypr"
+HYPR_CONF="${HYPR_CONF_DIR}/hyprland.conf"
+QS_CONF_DIR="${HOME}/.config/quickshell/caelestia"
+TMPDIR="$(mktemp -d -t caelestia-XXXXXXXX)"
+# ----------------------------------------------------------------------
+
+note(){ printf "\033[1;36m[i]\033[0m %s\n" "$*"; }
+ok(){   printf "\033[1;32m[✓]\033[0m %s\n" "$*"; }
+warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*"; }
+err(){  printf "\033[1;31m[x]\033[0m %s\n" "$*" >&2; }
+
+have(){ command -v "$1" >/dev/null 2>&1; }
+
+cleanup(){
+  rm -rf "$TMPDIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+log_exec(){ echo -e "\n>> $*\n" | tee -a "$LOGFILE"; "$@" 2>&1 | tee -a "$LOGFILE"; }
+
+sudo_advise(){
+  echo
+  warn "Some steps need packages. When asked for a password, enter your USER password (sudo)."
+  echo
+}
+
+require_net(){
+  if ! ping -c1 -W2 archlinux.org >/dev/null 2>&1; then
+    warn "No reliable network reply (archlinux.org). We'll continue, but if downloads fail, fix your network and re-run."
+  else
+    ok "Internet reachable."
+  fi
+}
+
+# ----------------------- Package install helpers ----------------------
+pacman_try(){
+  if have pacman; then
+    sudo -v || true
+    sudo pacman -Sy --needed --noconfirm "$@" || return 1
+    return 0
+  fi
+  return 1
+}
+
+aur_try(){
+  # Try yay then paru
+  if have yay; then yay -S --needed --noconfirm "$@" && return 0; fi
+  if have paru; then paru -S --needed --noconfirm "$@" && return 0; fi
+  return 1
+}
+
+build_quickshell_from_source(){
+  note "Building QuickShell from source (last resort)…"
+  local qsdir="${TMPDIR}/quickshell"
+  git clone --depth=1 https://github.com/Quickshell/Quickshell.git "$qsdir" | tee -a "$LOGFILE"
+  pushd "$qsdir" >/dev/null
+  note "Installing build deps…"
+  pacman_try base-devel cmake ninja gcc || true
+  pacman_try qt6-base qt6-declarative qt6-wayland qt6-shadertools qt6-svg || true
+  note "Configuring & building…"
+  log_exec cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+  log_exec cmake --build build
+  note "Installing QuickShell (needs sudo)…"
+  log_exec sudo cmake --install build
+  popd >/dev/null
+}
+
+ensure_quickshell(){
+  if have quickshell || [ -f "$QS_DESKTOP_ENTRY" ]; then
+    ok "QuickShell already present."
+    return
+  fi
+  sudo_advise
+  note "Installing QuickShell via pacman (if available)…"
+  if pacman_try quickshell; then ok "QuickShell installed (pacman)."; return; fi
+  note "Installing QuickShell via AUR helper (yay/paru)…"
+  if aur_try quickshell quickshell-bin quickshell-git; then ok "QuickShell installed (AUR)."; return; fi
+  build_quickshell_from_source
+  if have quickshell; then ok "QuickShell installed (source)."; else err "QuickShell install failed." ; exit 1; fi
+}
+
+ensure_runtime_deps(){
+  sudo_advise
+  note "Installing Qt/Wayland runtime & tools (safe to skip if already present)…"
+  # many were “skipping” on your machine; that’s fine
+  pacman_try \
+    git curl unzip tar \
+    qt6-base qt6-declarative qt6-wayland qt6-shadertools qt6-svg \
+    pipewire wireplumber kitty hyprland || true
+}
+
+# -------------------------- Git/Zip fetch -----------------------------
+grab_repo(){
+  # $1 repo url, $2 dest dir
+  local repo="$1" dest="$2"
+  local name="$(basename "$repo")"
+  mkdir -p "$(dirname "$dest")"
+  if have git; then
+    note "Cloning $name (git)…"
+    if ! GIT_ASKPASS=echo git clone --depth=1 "$repo" "$dest" 2>>"$LOGFILE"; then
+      warn "git clone failed. Falling back to zip download."
+    else
+      ok "Cloned $name."
+      return 0
+    fi
+  fi
+  # zip fallback
+  local zipurl="${repo%/}.zip"
+  local zipfile="${TMPDIR}/${name}.zip"
+  note "Downloading $name as zip…"
+  curl -L --fail "$zipurl" -o "$zipfile" 2>>"$LOGFILE" || { err "curl failed for $zipurl"; return 1; }
+  mkdir -p "$dest"
+  note "Unpacking $name…"
+  unzip -q "$zipfile" -d "$TMPDIR/unzip" || { err "unzip failed for $name"; return 1; }
+  # Move contents regardless of top-dir name
+  shopt -s dotglob nullglob
+  local topdir; topdir="$(find "$TMPDIR/unzip" -maxdepth 1 -type d ! -path "$TMPDIR/unzip" | head -n1)"
+  if [ -z "${topdir:-}" ]; then err "Zip structure unexpected for $name"; return 1; fi
+  mv "$topdir"/* "$dest"/
+  ok "Unpacked $name."
+  return 0
+}
+
+# ----------------------- Wire Caelestia files -------------------------
+wire_shell(){
+  note "Resetting Caelestia QuickShell config…"
+  rm -rf "$QS_CONF_DIR"
+  mkdir -p "$QS_CONF_DIR"
+
+  local caeldir="${TMPDIR}/caelestia-main"
+  local shelldir="${TMPDIR}/caelestia-shell"
+
+  grab_repo "$CAEL_REPO" "$caeldir" || { err "Failed to get main caelestia repo."; exit 1; }
+  grab_repo "$SHELL_REPO" "$shelldir" || { err "Failed to get caelestia shell repo."; exit 1; }
+
+  note "Copying Caelestia modules…"
+  if [ ! -d "$caeldir/modules" ]; then
+    err "Main repo does not contain 'modules/'. Check the repo contents."
+    exit 1
+  fi
+  cp -r "$caeldir/modules" "$QS_CONF_DIR/"
+
+  note "Copying shell UI files…"
+  # shell repo has its own structure; we copy its content into the Caelestia config
+  cp -r "$shelldir/"* "$QS_CONF_DIR/"
+
+  # sanity
+  if [ ! -f "$QS_CONF_DIR/shell.qml" ]; then
+    err "shell.qml not found after copy. The shell repo layout might have changed."
+    exit 1
+  fi
+  if [ ! -d "$QS_CONF_DIR/modules" ]; then
+    err "modules folder missing after copy. Aborting."
+    exit 1
+  fi
+  ok "Caelestia files wired."
+}
+
+autostart_hyprland(){
+  mkdir -p "$HYPR_CONF_DIR"
+  touch "$HYPR_CONF"
+  if ! grep -q 'exec-once\s*=\s*quickshell\s*-c\s*caelestia' "$HYPR_CONF"; then
+    note "Adding Caelestia autostart to Hyprland…"
+    printf '\n# Autostart Caelestia Shell\nexec-once = quickshell -c caelestia\n' >> "$HYPR_CONF"
+  else
+    ok "Hyprland autostart already present."
+  fi
+}
+
+# ----------------------------- Run ------------------------------------
+echo -e "\n==> Caelestia full RESET + INSTALL started ==" | tee "$LOGFILE"
+require_net
+ensure_runtime_deps
+ensure_quickshell
+wire_shell
+autostart_hyprland
+
+# Quick self-check
+echo >> "$LOGFILE"
+note "Self-checking file presence…"
+[ -f "$QS_CONF_DIR/shell.qml" ] && ok "shell.qml present." || err "shell.qml missing!"
+[ -d "$QS_CONF_DIR/modules" ] && ok "modules/ present." || err "modules missing!"
+
+cat <<EOF
+
+────────────────────────────────────────────────────────────────
+All set.
+
+• In Hyprland, Caelestia should auto-start next login (we added exec-once).
+• You can also launch manually (inside Wayland/Hyprland):
+
+    env QT_QPA_PLATFORM=wayland quickshell -c caelestia
+      — or simply —
+    quickshell -c caelestia
+
+• If you still see only the triangle splash, open a terminal (Super+Enter if kitty)
+  and run the manual command above to see live errors (also logged).
+
+Log file: $LOGFILE
+Config:   $QS_CONF_DIR
+Hypr conf: $HYPR_CONF
+────────────────────────────────────────────────────────────────
 EOF
-chmod +x "$LAUNCHER"
-ok "Launcher ready."
 
-# Autostart inside Hyprland
-mkdir -p "$(dirname "$HYPRCONF")"
-touch "$HYPRCONF"
-if ! grep -qE '^\s*exec-once\s*=\s*.*caelestia-shell' "$HYPRCONF"; then
-  echo 'exec-once = caelestia-shell' >> "$HYPRCONF"
-  ok "Added Hyprland autostart (exec-once = caelestia-shell)."
-else
-  ok "Hyprland autostart already present."
-fi
-
-### ────────────────────────── Final checks ───────────────────────────
-echo
-ok "Install finished. Log: $LOGFILE"
-echo
-if need hyprland; then
-  echo "➤ If you are already in Hyprland: run   caelestia-shell"
-  echo "➤ Otherwise: log in to Wayland/Hyprland; Caelestia will autostart."
-else
-  echo "➤ Start Hyprland (Wayland). After login, Caelestia autostarts."
-fi
-
-echo
-say "Manual test command (inside Wayland session):"
-echo "    quickshell -c caelestia"
+ok "Done."

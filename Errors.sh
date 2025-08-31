@@ -1,27 +1,31 @@
-bash -c '
-set -euo pipefail
+bash -euo pipefail <<'EOF'
+# Material Symbols Rounded (variable TTF) — lightweight install
 
-echo "[1/4] Install core fonts from Arch repos…"
-sudo pacman -Syu --needed --noconfirm \
-  ttf-cascadia-code-nerd noto-fonts noto-fonts-cjk ttf-liberation unzip curl
+FONT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/fonts"
+TMP="$(mktemp -d)"
+TTF_NAME="MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf"
+TTF_URL="https://github.com/google/material-design-icons/blob/master/variablefont/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.ttf?raw=1"
 
-echo "[2/4] Download Material Symbols (latest official release)…"
-TMPDIR="$(mktemp -d)"
-curl -L --retry 3 --retry-connrefused --fail \
-  -o "$TMPDIR/material-symbols.zip" \
-  https://github.com/google/material-design-icons/archive/refs/heads/master.zip
-
-echo "[3/4] Extract Rounded fonts…"
-unzip -q "$TMPDIR/material-symbols.zip" -d "$TMPDIR"
-FONT_DIR="$HOME/.local/share/fonts"
+echo "[1/4] Ensuring font dir: $FONT_DIR"
 mkdir -p "$FONT_DIR"
 
-# copy Rounded TTFs if available
-find "$TMPDIR" -type f -iname "MaterialSymbolsRounded*.ttf" -exec cp {} "$FONT_DIR/" \;
+echo "[2/4] Downloading $TTF_NAME (few MB)…"
+curl -fL --retry 3 --retry-delay 2 -o "$TMP/$TTF_NAME" "$TTF_URL"
 
-echo "[4/4] Refresh font cache…"
-fc-cache -f
-fc-list | grep -Ei "Material|Caskaydia|Cascadia" || true
+# quick sanity check: file should be > 1MB
+SZ=$(stat -c%s "$TMP/$TTF_NAME" 2>/dev/null || echo 0)
+if [ "$SZ" -lt 1000000 ]; then
+  echo "Download looks too small ($SZ bytes). Aborting to be safe." >&2
+  exit 1
+fi
 
-echo "✅ Fonts installed. Try restarting Hyprland and running:  caelestia-shell"
-'
+echo "[3/4] Installing font into $FONT_DIR"
+install -m 0644 "$TMP/$TTF_NAME" "$FONT_DIR/"
+
+echo "[4/4] Refreshing font cache"
+fc-cache -f "$FONT_DIR" >/dev/null || true
+
+echo "✓ Material Symbols Rounded installed."
+echo "If Caelestia is running, reload it or log out/in to pick up the font."
+rm -rf "$TMP"
+EOF

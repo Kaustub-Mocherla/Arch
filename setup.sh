@@ -30,4 +30,4 @@ echo "[✓] Updated caelestia-shell launcher to include QuickShell modules."
 echo "    Try running now: caelestia-shell"
 EOF
 
-bash ~/fix_qml_path.sh Try running: quickshell --version"
+bash ~/fix_qml_path.sh Try running: quickshell --version

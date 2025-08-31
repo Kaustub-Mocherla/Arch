@@ -1,17 +1,23 @@
-echo "== quickshell version"; quickshell --version
-echo
-echo "== quickshell binary"; command -v quickshell
-echo
-echo "== Caelestia config dir"; ls -al "$HOME/.config/quickshell/caelestia"
-echo
-echo "== first lines of shell.qml"; head -n 5 "$HOME/.config/quickshell/caelestia/shell.qml"
-echo
-echo "== QML2_IMPORT_PATH env"; printf '%s\n' "${QML2_IMPORT_PATH:-<empty>}"
-echo
-echo "== QuickShell package files (note: -Ql uses a *lowercase* L)"
-pacman -Ql quickshell | awk '{print $2}' | grep -E '/(qml|modules)/?$' | sed -n '1,30p'
-echo
-echo "== Search filesystem for quickshell QML dirs (may take a few seconds)"
-find /usr -maxdepth 6 -type d \( -iname '*quickshell*' -o -ipath '*/qt6/qml/*' \) 2>/dev/null | sed -n '1,50p'
-echo
-echo "== launcher content (if present)"; grep -n 'QML2_IMPORT_PATH\|quickshell -c' "$HOME/.local/bin/caelestia-shell" || echo "(no launcher)"
+#!/bin/bash
+set -e
+
+CE_DIR="$HOME/.config/quickshell/caelestia"
+QS_DIR="/usr/lib/qt6/qml"
+
+if [ ! -f "$CE_DIR/shell.qml" ]; then
+    echo "[x] ERROR: shell.qml not found in $CE_DIR"
+    exit 1
+fi
+
+echo "[i] Writing fixed launcher..."
+
+cat > "$HOME/.local/bin/caelestia-shell" <<EOF
+#!/bin/bash
+export QML2_IMPORT_PATH="$CE_DIR/modules:$QS_DIR\${QML2_IMPORT_PATH:+:\$QML2_IMPORT_PATH}"
+exec quickshell -c "$CE_DIR"
+EOF
+
+chmod +x "$HOME/.local/bin/caelestia-shell"
+
+echo "[✓] Launcher fixed."
+echo "Now run:  caelestia-shell   (inside Hyprland session)"

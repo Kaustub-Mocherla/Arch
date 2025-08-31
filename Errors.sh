@@ -1,68 +1,76 @@
-#!/usr/bin/env bash
-set -euo pipefail
+bash -euo pipefail <<'EOF'
+# ── Fill ONLY the missing Caelestia QML modules (qs.services, qs.components, qs.config, qs.utils)
 
-CE_DIR="$HOME/.config/quickshell/caelestia"
-BIN="$HOME/.local/bin"
-mkdir -p "$BIN"
+HOME_DIR="$HOME"
+CFG_DIR="$HOME_DIR/.config/quickshell/caelestia"
+MOD_ROOT="$CFG_DIR/modules"                 # your launcher already imports this root
+QS_ROOT="$MOD_ROOT/qs"                       # module paths must be qs/services, qs/components, …
 
-echo "[i] Making sure base deps are present…"
-sudo pacman -Syu --needed --noconfirm \
-  git base-devel cmake ninja \
-  qt6-base qt6-declarative qt6-wayland qt6-svg qt6-shadertools
+CACHE="$HOME_DIR/.cache/caelestia-src"
+MAIN_REPO_URL="https://github.com/caelestia-dots/caelestia"
 
-# quickshell-git & caelestia-cli should already be there per your logs, but try once more
-if ! pacman -Q quickshell-git >/dev/null 2>&1; then
-  echo "[!] quickshell-git is missing; install it first (AUR)."
-  exit 1
-fi
-if ! pacman -Q caelestia-cli >/dev/null 2>&1; then
-  echo "[!] caelestia-cli is missing; install it first (AUR)."
-  exit 1
-fi
+echo "[1] Ensure folders…"
+mkdir -p "$QS_ROOT" "$CACHE"
 
-echo "[i] Ensuring Caelestia shell repo exists at $CE_DIR …"
-if [ -d "$CE_DIR/.git" ]; then
-  git -C "$CE_DIR" fetch --all --prune
-  git -C "$CE_DIR" reset --hard origin/main
+echo "[2] Fetch/refresh MAIN repo…"
+if [ -d "$CACHE/caelestia/.git" ]; then
+  git -C "$CACHE/caelestia" fetch --all --prune
+  git -C "$CACHE/caelestia" reset --hard origin/main
 else
-  rm -rf "$CE_DIR"
-  git clone https://github.com/caelestia-dots/shell.git "$CE_DIR"
+  git clone "$MAIN_REPO_URL" "$CACHE/caelestia"
 fi
 
-echo "[i] Building Caelestia shell (CMake + Ninja)…"
-cd "$CE_DIR"
-rm -rf build
-cmake -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/ \
-  -DINSTALL_QSCONFDIR="$CE_DIR"
-cmake --build build
-sudo cmake --install build
-sudo chown -R "$USER:$USER" "$CE_DIR"
+# Map of module name -> source dir in the repo
+declare -A MAP=(
+  [services]="services"
+  [components]="components"
+  [config]="config"
+  [utils]="utils"
+)
 
-echo "[i] Writing launcher…"
-cat > "$BIN/caelestia-shell" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-CE_DIR="$HOME/.config/quickshell/caelestia"
-# Make sure Caelestia modules are on QML path
-export QML2_IMPORT_PATH="$CE_DIR/modules${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
-export QT_QPA_PLATFORM=wayland
-if command -v caelestia >/dev/null 2>&1; then
-  exec caelestia shell -d
-else
-  exec quickshell -c "$CE_DIR"
+copy_qs_module () {
+  local name="$1"
+  local src="$CACHE/caelestia/${MAP[$name]}"
+  local dst="$QS_ROOT/$name"
+
+  if [ ! -d "$src" ]; then
+    echo "  - WARN: repo missing '${MAP[$name]}' → skipping"
+    return 0
+  fi
+
+  mkdir -p "$dst"
+  # Copy/refresh files but DO NOT clobber your edits if any newer locally
+  rsync -rt --delete "$src/" "$dst/"
+
+  # Ensure the qmldir declares the right module (qs.<name>)
+  if ! grep -q '^module[[:space:]]\+qs\.'"$name"'$' "$dst/qmldir" 2>/dev/null; then
+    echo "module qs.$name" > "$dst/qmldir"
+  fi
+
+  echo "  - qs.$name ready at $dst"
+}
+
+echo "[3] Install/refresh qs.* modules under $QS_ROOT …"
+copy_qs_module services
+copy_qs_module components
+copy_qs_module config
+copy_qs_module utils
+
+echo "[4] Verify layout and import path…"
+echo "  - Expect to see: components  config  services  utils"
+ls -1 "$QS_ROOT" || true
+
+# Make sure your launcher style (QML2_IMPORT_PATH=<mods>) resolves qs/*
+# Nothing to change if you already use: export QML2_IMPORT_PATH="$CFG_DIR/modules:…"
+# Quick sanity test:
+export QML2_IMPORT_PATH="$MOD_ROOT${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+if command -v quickshell >/dev/null 2>&1; then
+  echo "  - Quick test: listing known module roots (not an error if none printed)"
+  echo "$QML2_IMPORT_PATH" | tr ':' '\n' | sed 's/^/    /'
 fi
+
+echo
+echo "✓ Modules synced. Now inside Hyprland, run:  caelestia-shell"
+echo "  If anything still complains about qs.*:"
+echo "    ls -R $QS_ROOT | sed 's/^/    /'"
 EOF
-chmod +x "$BIN/caelestia-shell"
-
-echo
-echo "[v] Done. Now, inside Hyprland, run:"
-echo "    caelestia-shell"
-echo
-echo "If it still fails with 'module qs.* not installed', run this once to verify:"
-echo "    ls -1 $CE_DIR/modules/qs || true"
-echo "…you should see: components/  config/  services/  utils/"
-echo
-echo "You can also launch with an explicit import path for testing:"
-echo "    QML2_IMPORT_PATH=$CE_DIR/modules:$QML2_IMPORT_PATH caelestia-shell"

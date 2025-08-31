@@ -1,50 +1,37 @@
-cat > ~/fix_caelestia.sh <<'EOF'
-#!/usr/bin/env bash
+bash -c '
 set -euo pipefail
 
-CE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
+echo "[1/5] Install fonts from official repos (safe to re-run)…"
+sudo pacman -Syu --needed --noconfirm \
+  ttf-cascadia-code-nerd noto-fonts noto-fonts-cjk ttf-liberation
 
-# quick sanity check
-if [ ! -d "$CE_DIR/modules" ] || [ ! -f "$CE_DIR/shell.qml" ]; then
-  echo "[x] Expected Caelestia files missing in $CE_DIR"
-  ls -la "$CE_DIR" || true
-  exit 2
-fi
+echo "[2/5] Install Material Symbols Rounded locally…"
+FONT_DIR="$HOME/.local/share/fonts"
+mkdir -p "$FONT_DIR"
 
-# Make/overwrite the launcher
-mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/caelestia-shell" <<'LAUNCH'
-#!/usr/bin/env bash
-set -euo pipefail
-CE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
-# Make sure Caelestia QML modules are found
-export QML2_IMPORT_PATH="$CE_DIR/modules${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
-# IMPORTANT: QuickShell 0.2 expects the DIRECTORY, not shell.qml
-exec quickshell -c "$CE_DIR"
-LAUNCH
-chmod +x "$HOME/.local/bin/caelestia-shell"
-
-# Ensure ~/.local/bin is on PATH for this and future shells
-PROFILE="$HOME/.profile"
-if ! grep -q '\.local/bin' "$PROFILE" 2>/dev/null; then
-  printf '\n# Add ~/.local/bin to PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$PROFILE"
-fi
-# Load PATH now (ignore errors if any)
-. "$PROFILE" 2>/dev/null || true
-
-echo "[✓] Launcher installed at ~/.local/bin/caelestia-shell"
-echo "[i] Quick check:"
-type -a caelestia-shell || true
-ls -l "$CE_DIR" || true
-
-# If we're already inside Wayland (Hyprland), start it now
-if [ -n "${WAYLAND_DISPLAY-}" ]; then
-  echo "[→] Launching Caelestia…"
-  exec env QML2_IMPORT_PATH="$CE_DIR/modules${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}" \
-       quickshell -c "$CE_DIR"
+# Download the variable Material Symbols Rounded TTF from Google s repo.
+# If curl fails (network/mirror issues), it won’t break existing files.
+MSR_TTF="$FONT_DIR/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf"
+if [ ! -f "$MSR_TTF" ]; then
+  echo "    - Downloading Material Symbols Rounded (variable TTF)…"
+  curl -L --retry 3 --retry-connrefused --fail \
+    -o "$MSR_TTF" \
+    https://raw.githubusercontent.com/google/material-design-icons/master/font/variable/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.ttf
 else
-  echo "[!] Not in a Wayland session. Open Hyprland and run:  caelestia-shell"
+  echo "    - Already present: $MSR_TTF"
 fi
-EOF
 
-bash ~/fix_caelestia.sh
+echo "[3/5] Rebuild font cache…"
+fc-cache -f
+
+echo "[4/5] Show fonts we just installed (for sanity)…"
+fc-list | grep -Ei "MaterialSymbolsRounded|Cascadia|Caskaydia" || true
+
+echo "[5/5] Launch Caelestia…"
+# Use the launcher that exports QML2_IMPORT_PATH for modules:
+if command -v caelestia-shell >/dev/null 2>&1; then
+  caelestia-shell
+else
+  echo "caelestia-shell launcher not found in PATH. Try: source ~/.profile && caelestia-shell"
+fi
+'

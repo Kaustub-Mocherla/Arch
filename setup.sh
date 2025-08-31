@@ -1,55 +1,68 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[i] Installing repo fonts (safe)…"
-sudo pacman -Syu --needed --noconfirm \
-  noto-fonts noto-fonts-cjk noto-fonts-emoji \
-  ttf-dejavu ttf-liberation \
-  ttf-nerd-fonts-symbols ttf-nerd-fonts-symbols-mono
-
-AUR_HELPER=""
-if command -v paru >/dev/null 2>&1; then AUR_HELPER="paru"
-elif command -v yay >/dev/null 2>&1; then AUR_HELPER="yay"
-fi
-
-if [ -n "$AUR_HELPER" ]; then
-  echo "[i] Trying to install Material Symbols via $AUR_HELPER (best effort)…"
-  # Try several common package names; ignore failures.
-  $AUR_HELPER -S --needed --noconfirm \
-    ttf-material-symbols || true
-  $AUR_HELPER -S --needed --noconfirm \
-    material-symbols || true
-  $AUR_HELPER -S --needed --noconfirm \
-    ttf-material-symbols-rounded || true
-  $AUR_HELPER -S --needed --noconfirm \
-    ttf-material-icons || true
-else
-  echo "[!] No AUR helper found (paru/yay)."
-  echo "    You can install one later to get Material Symbols specifically."
-  echo "    For now, Nerd Symbols + Noto will install and most UI text renders correctly."
-fi
-
-echo "[i] Rebuilding font cache…"
-fc-cache -f
-
-# Small pause so cache settles on slower disks
-sleep 1
-
-# Re-launch Caelestia with explicit import path just in case
 CE_DIR="$HOME/.config/quickshell/caelestia"
+BIN="$HOME/.local/bin"
+mkdir -p "$BIN"
+
+echo "[i] Making sure base deps are present…"
+sudo pacman -Syu --needed --noconfirm \
+  git base-devel cmake ninja \
+  qt6-base qt6-declarative qt6-wayland qt6-svg qt6-shadertools
+
+# quickshell-git & caelestia-cli should already be there per your logs, but try once more
+if ! pacman -Q quickshell-git >/dev/null 2>&1; then
+  echo "[!] quickshell-git is missing; install it first (AUR)."
+  exit 1
+fi
+if ! pacman -Q caelestia-cli >/dev/null 2>&1; then
+  echo "[!] caelestia-cli is missing; install it first (AUR)."
+  exit 1
+fi
+
+echo "[i] Ensuring Caelestia shell repo exists at $CE_DIR …"
+if [ -d "$CE_DIR/.git" ]; then
+  git -C "$CE_DIR" fetch --all --prune
+  git -C "$CE_DIR" reset --hard origin/main
+else
+  rm -rf "$CE_DIR"
+  git clone https://github.com/caelestia-dots/shell.git "$CE_DIR"
+fi
+
+echo "[i] Building Caelestia shell (CMake + Ninja)…"
+cd "$CE_DIR"
+rm -rf build
+cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/ \
+  -DINSTALL_QSCONFDIR="$CE_DIR"
+cmake --build build
+sudo cmake --install build
+sudo chown -R "$USER:$USER" "$CE_DIR"
+
+echo "[i] Writing launcher…"
+cat > "$BIN/caelestia-shell" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+CE_DIR="$HOME/.config/quickshell/caelestia"
+# Make sure Caelestia modules are on QML path
 export QML2_IMPORT_PATH="$CE_DIR/modules${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
 export QT_QPA_PLATFORM=wayland
-
-echo
-echo "[v] Fonts refreshed. Launching Caelestia…"
 if command -v caelestia >/dev/null 2>&1; then
-  caelestia shell -d || true
+  exec caelestia shell -d
 else
-  quickshell -c "$CE_DIR" || true
+  exec quickshell -c "$CE_DIR"
 fi
+EOF
+chmod +x "$BIN/caelestia-shell"
 
 echo
-echo "[Tip] If icons still show as words, it means Material Symbols didn’t install yet."
-echo "      Once you have an AUR helper, run one of:"
-echo "        paru  -S ttf-material-symbols"
-echo "        yay   -S ttf-material-symbols"
+echo "[v] Done. Now, inside Hyprland, run:"
+echo "    caelestia-shell"
+echo
+echo "If it still fails with 'module qs.* not installed', run this once to verify:"
+echo "    ls -1 $CE_DIR/modules/qs || true"
+echo "…you should see: components/  config/  services/  utils/"
+echo
+echo "You can also launch with an explicit import path for testing:"
+echo "    QML2_IMPORT_PATH=$CE_DIR/modules:$QML2_IMPORT_PATH caelestia-shell"

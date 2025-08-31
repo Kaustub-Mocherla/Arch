@@ -1,26 +1,33 @@
+cat > ~/fix_qml_path.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[+] Installing QuickShell from source…"
+CE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
+QS_QML="/usr/share/quickshell/modules"
 
-# Install build tools
-sudo pacman -S --needed --noconfirm base-devel git cmake ninja qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools
+if [ ! -d "$CE_DIR" ]; then
+  echo "[x] Caelestia not found in $CE_DIR"
+  exit 1
+fi
 
-# Remove any old source
-rm -rf "$HOME/.cache/quickshell-src"
-mkdir -p "$HOME/.cache"
-cd "$HOME/.cache"
+if [ ! -d "$QS_QML" ]; then
+  echo "[!] QuickShell QML modules not found in $QS_QML"
+  echo "    Run:  pacman -Ql quickshell | grep modules"
+  exit 2
+fi
 
-# Clone QuickShell (public URL, no login needed)
-git clone --depth=1 https://github.com/queso-fondue/quickshell.git quickshell-src
-cd quickshell-src
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/caelestia-shell" <<LAUNCH
+#!/usr/bin/env bash
+CE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
+QS_QML="$QS_QML"
+export QML2_IMPORT_PATH="\$CE_DIR/modules:\$QS_QML\${QML2_IMPORT_PATH:+:\$QML2_IMPORT_PATH}"
+exec quickshell -c "\$CE_DIR"
+LAUNCH
+chmod +x "$HOME/.local/bin/caelestia-shell"
 
-# Build QuickShell
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+echo "[✓] Updated caelestia-shell launcher to include QuickShell modules."
+echo "    Try running now: caelestia-shell"
+EOF
 
-# Install QuickShell system-wide
-sudo cmake --install build
-
-echo "[+] QuickShell installed successfully!"
-echo "    Try running: quickshell --version"
+bash ~/fix_qml_path.sh Try running: quickshell --version"

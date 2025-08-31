@@ -1,37 +1,27 @@
 bash -c '
 set -euo pipefail
 
-echo "[1/5] Install fonts from official repos (safe to re-run)…"
+echo "[1/4] Install core fonts from Arch repos…"
 sudo pacman -Syu --needed --noconfirm \
-  ttf-cascadia-code-nerd noto-fonts noto-fonts-cjk ttf-liberation
+  ttf-cascadia-code-nerd noto-fonts noto-fonts-cjk ttf-liberation unzip curl
 
-echo "[2/5] Install Material Symbols Rounded locally…"
+echo "[2/4] Download Material Symbols (latest official release)…"
+TMPDIR="$(mktemp -d)"
+curl -L --retry 3 --retry-connrefused --fail \
+  -o "$TMPDIR/material-symbols.zip" \
+  https://github.com/google/material-design-icons/archive/refs/heads/master.zip
+
+echo "[3/4] Extract Rounded fonts…"
+unzip -q "$TMPDIR/material-symbols.zip" -d "$TMPDIR"
 FONT_DIR="$HOME/.local/share/fonts"
 mkdir -p "$FONT_DIR"
 
-# Download the variable Material Symbols Rounded TTF from Google s repo.
-# If curl fails (network/mirror issues), it won’t break existing files.
-MSR_TTF="$FONT_DIR/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf"
-if [ ! -f "$MSR_TTF" ]; then
-  echo "    - Downloading Material Symbols Rounded (variable TTF)…"
-  curl -L --retry 3 --retry-connrefused --fail \
-    -o "$MSR_TTF" \
-    https://raw.githubusercontent.com/google/material-design-icons/master/font/variable/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.ttf
-else
-  echo "    - Already present: $MSR_TTF"
-fi
+# copy Rounded TTFs if available
+find "$TMPDIR" -type f -iname "MaterialSymbolsRounded*.ttf" -exec cp {} "$FONT_DIR/" \;
 
-echo "[3/5] Rebuild font cache…"
+echo "[4/4] Refresh font cache…"
 fc-cache -f
+fc-list | grep -Ei "Material|Caskaydia|Cascadia" || true
 
-echo "[4/5] Show fonts we just installed (for sanity)…"
-fc-list | grep -Ei "MaterialSymbolsRounded|Cascadia|Caskaydia" || true
-
-echo "[5/5] Launch Caelestia…"
-# Use the launcher that exports QML2_IMPORT_PATH for modules:
-if command -v caelestia-shell >/dev/null 2>&1; then
-  caelestia-shell
-else
-  echo "caelestia-shell launcher not found in PATH. Try: source ~/.profile && caelestia-shell"
-fi
+echo "✅ Fonts installed. Try restarting Hyprland and running:  caelestia-shell"
 '

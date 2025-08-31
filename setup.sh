@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[+] Installing QuickShell from source (AUR replacement)…"
+echo "[+] Installing QuickShell from source…"
 
 # Install build tools
 sudo pacman -S --needed --noconfirm base-devel git cmake ninja qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools
@@ -11,8 +11,8 @@ rm -rf "$HOME/.cache/quickshell-src"
 mkdir -p "$HOME/.cache"
 cd "$HOME/.cache"
 
-# Clone QuickShell
-git clone --depth=1 https://github.com/queso-fondue/quickshell quickshell-src
+# Clone QuickShell (public URL, no login needed)
+git clone --depth=1 https://github.com/queso-fondue/quickshell.git quickshell-src
 cd quickshell-src
 
 # Build QuickShell

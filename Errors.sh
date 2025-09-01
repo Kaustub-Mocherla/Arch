@@ -1,75 +1,93 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== Caelestia repair: repos + shell + qs modules + QML path + wallpaper ==="
+echo "== Caelestia Shell — repair (clone, build, install to ~/.config) =="
 
-# --- paths
-HOME_DIR="$HOME"
-CFG_DIR="$HOME_DIR/.config/quickshell/caelestia"
-MOD_DIR="$CFG_DIR/modules"
-QS_MOD_DIR="$MOD_DIR/qs"
-CACHE_DIR="$HOME_DIR/.cache/caelestia-src"
-LAUNCHER="$HOME_DIR/.local/bin/caelestia-shell"
-SYS_QML_DIR="/usr/lib/qt6/qml"   # QuickShell ships its QMLs here on Arch
+# Paths
+CE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
+SRC_DIR="$HOME/.cache/caelestia-shell-src"
+BIN_DIR="$HOME/.local/bin"
+LAUNCHER="$BIN_DIR/caelestia-shell"
 
-mkdir -p "$CFG_DIR" "$MOD_DIR" "$QS_MOD_DIR" "$CACHE_DIR" "$(dirname "$LAUNCHER")"
+mkdir -p "$BIN_DIR" "$SRC_DIR"
 
-# --- 0) minimal runtime deps (do NOT touch mirrors)
-echo "[0/6] Ensuring minimal deps exist (skipping if already present)…"
+# 0) Quick preflight
+echo "[0] Checking QuickShell + CLI presence…"
+if ! command -v quickshell >/dev/null 2>&1; then
+  echo "!! quickshell is not on PATH. Install quickshell-git first, then re-run."
+  exit 1
+fi
+if ! command -v caelestia >/dev/null 2>&1; then
+  echo "!! caelestia CLI is not on PATH. Install caelestia-cli (AUR), then re-run."
+  exit 1
+fi
+
+# 1) Minimal repo deps (all repo packages; no AUR pulls here)
+echo "[1] Installing minimal runtime libs from repos…"
 sudo pacman -Sy --needed --noconfirm \
+  cmake ninja git \
   qt6-base qt6-declarative qt6-wayland qt6-svg qt6-shadertools \
-  swww wl-clipboard grim slurp swappy playerctl pamixer jq curl unzip || true
+  curl unzip jq \
+  wl-clipboard grim slurp swappy \
+  playerctl pamixer brightnessctl \
+  noto-fonts ttf-liberation ttf-cascadia-code-nerd || true
 
-# --- 1) clone/refresh repos
-echo "[1/6] Syncing Caelestia sources…"
-if [[ -d "$CACHE_DIR/caelestia/.git" ]]; then
-  git -C "$CACHE_DIR/caelestia" fetch --all -p || true
-  git -C "$CACHE_DIR/caelestia" reset --hard origin/main || true
+# 2) Clone/refresh ONLY the shell repo (not the main dots)
+echo "[2] Syncing caelestia-dots/shell…"
+if [ -d "$SRC_DIR/.git" ]; then
+  git -C "$SRC_DIR" remote set-url origin https://github.com/caelestia-dots/shell.git || true
+  git -C "$SRC_DIR" fetch --all --prune
+  git -C "$SRC_DIR" reset --hard origin/main
 else
-  rm -rf "$CACHE_DIR/caelestia"
-  git clone https://github.com/caelestia-dots/caelestia "$CACHE_DIR/caelestia"
+  rm -rf "$SRC_DIR"
+  git clone https://github.com/caelestia-dots/shell.git "$SRC_DIR"
 fi
 
-if [[ -d "$CACHE_DIR/shell/.git" ]]; then
-  git -C "$CACHE_DIR/shell" fetch --all -p || true
-  git -C "$CACHE_DIR/shell" reset --hard origin/main || true
-else
-  rm -rf "$CACHE_DIR/shell"
-  git clone https://github.com/caelestia-dots/shell "$CACHE_DIR/shell"
-fi
+# 3) Build and install into ~/.config/quickshell/caelestia (per README)
+echo "[3] Building + installing into $CE_DIR …"
+mkdir -p "$CE_DIR"
+pushd "$SRC_DIR" >/dev/null
+rm -rf build
+cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/ \
+  -DINSTALL_QSCONFDIR="$CE_DIR"
+cmake --build build
+sudo cmake --install build
+sudo chown -R "$USER:$USER" "$CE_DIR"
+popd >/dev/null
 
-# --- 2) install shell files
-echo "[2/6] Installing shell files…"
-install -m 0644 "$CACHE_DIR/shell/shell.qml" "$CFG_DIR/shell.qml"
-rsync -a "$CACHE_DIR/shell/modules/" "$MOD_DIR/"
-
-# --- 3) provide qs/* modules (so 'import qs.services' etc. resolve)
-echo "[3/6] Installing qs.* modules…"
-for d in components services config utils; do
-  SRC="$CACHE_DIR/caelestia/$d"
-  DEST="$QS_MOD_DIR/$d"
-  if [[ -d "$SRC" ]]; then
-    mkdir -p "$DEST"
-    rsync -a --delete "$SRC/" "$DEST/"
-    echo "   - qs/$d ✓"
-  else
-    echo "   - WARNING: main repo missing '$d' (skipped)"
+# 4) Ensure the shell’s own modules (components/services/config/utils) are present
+echo "[4] Verifying Caelestia shell modules…"
+need=(components services config utils)
+missing=0
+for d in "${need[@]}"; do
+  if [ ! -d "$CE_DIR/$d" ] && [ ! -d "$CE_DIR/modules/$d" ]; then
+    echo "!! Missing: $d"
+    missing=1
   fi
 done
+if [ "$missing" -ne 0 ]; then
+  echo "!! Some Caelestia shell folders are missing. This should not happen."
+  echo "   Tree of $CE_DIR:"
+  find "$CE_DIR" -maxdepth 2 -type d -printf "   %p\n" || true
+fi
 
-# --- 4) launcher: put Caelestia modules and system QML dir on the import path
-echo "[4/6] Writing launcher…"
+# 5) Launcher — export QML2_IMPORT_PATH to include Caelestia + system QML dir
+echo "[5] Writing launcher to $LAUNCHER …"
 cat > "$LAUNCHER" <<'LAU'
 #!/usr/bin/env bash
 set -euo pipefail
-CE_DIR="$HOME/.config/quickshell/caelestia"
-SYS_QML_DIR="/usr/lib/qt6/qml"
-if [[ -n "${QML2_IMPORT_PATH:-}" ]]; then
-  export QML2_IMPORT_PATH="$CE_DIR/modules:$SYS_QML_DIR:$QML2_IMPORT_PATH"
-else
-  export QML2_IMPORT_PATH="$CE_DIR/modules:$SYS_QML_DIR"
-fi
+CE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
+
+# Include Caelestia’s QML dirs and system QuickShell QML dir
+SYS_QML="/usr/lib/qt6/qml"
+export QML2_IMPORT_PATH="$CE_DIR/modules:$CE_DIR:$SYS_QML${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+# Prefer Wayland
 export QT_QPA_PLATFORM=wayland
+
+# Run via CLI if present (for IPC features), else run plain quickshell
 if command -v caelestia >/dev/null 2>&1; then
   exec caelestia shell -d
 else
@@ -78,23 +96,16 @@ fi
 LAU
 chmod +x "$LAUNCHER"
 
-# --- 5) optional: ensure swww daemon & try a first wallpaper
-echo "[5/6] Wallpaper helper…"
-if ! pgrep -x swww-daemon >/dev/null 2>&1; then swww init || true; fi
-first_img=""
-for d in "$HOME_DIR/Pictures/Wallpapers" "$HOME_DIR/Pictures" "$HOME_DIR"; do
-  first_img="$(find "$d" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | head -n1 || true)"
-  [[ -n "$first_img" ]] && break
-done
-[[ -n "$first_img" ]] && swww img "$first_img" --transition-type any || true
+# 6) Light sanity checks
+echo "[6] Quick checks…"
+echo "   • shell.qml  -> $([ -f "$CE_DIR/shell.qml" ] && echo OK || echo MISSING)"
+echo "   • modules/   -> $([ -d "$CE_DIR/modules" ] && echo OK || echo MISSING)"
+echo "   • components -> $([ -d "$CE_DIR/components" ] && echo OK || echo MISSING)"
+echo "   • services   -> $([ -d "$CE_DIR/services" ] && echo OK || echo MISSING)"
+echo "   • config     -> $([ -d "$CE_DIR/config" ] && echo OK || echo MISSING)"
+echo "   • utils      -> $([ -d "$CE_DIR/utils" ] && echo OK || echo MISSING)"
 
-# --- 6) sanity prints
-echo "[6/6] Verifying:"
-echo "  shell.qml     -> $CFG_DIR/shell.qml"
-echo "  shell modules -> $MOD_DIR"
-echo "  qs modules    -> $QS_MOD_DIR/{components,config,services,utils}"
 echo
-echo "Launch now (inside Hyprland):  caelestia-shell"
-echo
-echo "If anything still looks missing, show:"
-echo "  ls -la $QS_MOD_DIR && find $QS_MOD_DIR -maxdepth 2 -type d | sort"
+echo "✓ Done. Launch inside Hyprland with:  caelestia-shell"
+echo "  If you still see 'Type Background unavailable' or 'qs.services not installed',"
+echo "  run:   quickshell -c \"$CE_DIR\"   and paste the first 20 lines of output."

@@ -1,119 +1,92 @@
-#!/usr/bin/env bash
-set -euo pipefail
+bash -euo pipefail <<'EOF'
+echo "== Caelestia quick-fix: AMD graphics + wallpaper =="
 
-# ---- config (change if you want) --------------------------------------------
-WALLPAPER_CANDIDATES=(
-  "$HOME/Pictures/Wallpapers"
-  "$HOME/Pictures"
-  "$HOME"
-)
-CE_CFG="$HOME/.config/quickshell/caelestia"
-QS_QML_SYS="/usr/lib/qt6/qml"                 # system QML dir
-# -----------------------------------------------------------------------------
+# ---------- helpers ----------
+have() { command -v "$1" >/dev/null 2>&1; }
+pkg() { sudo pacman -Sy --needed --noconfirm "$@"; }
 
-say() { printf "\033[1;36m[fix]\033[0m %s\n" "$*"; }
-ok()  { printf "\033[1;32m[ok]\033[0m %s\n"  "$*"; }
-warn(){ printf "\033[1;33m[warn]\033[0m %s\n" "$*"; }
-die() { printf "\033[1;31m[err]\033[0m %s\n" "$*" >&2; exit 1; }
+# ---------- sanity: Arch only ----------
+if ! have pacman; then
+  echo "This script is for Arch/Arch-based systems (needs pacman)." >&2
+  exit 1
+fi
 
-require_root_pkgs() {
-  local pkgs=("$@")
-  sudo pacman -Sy --needed --noconfirm "${pkgs[@]}"
-}
+# ---------- detect AMD GPU ----------
+GPU_LINE="$(lspci -nnk | grep -Ei 'VGA|3D|Display' | grep -Ei 'AMD|ATI' || true)"
+if [ -n "$GPU_LINE" ]; then
+  echo "[GPU] Detected AMD/ATI GPU:"
+  echo "      $GPU_LINE"
+  AMD=1
+else
+  echo "[GPU] AMD GPU not detected. I’ll still install Mesa/Vulkan in case it’s hybrid."
+  AMD=0
+fi
 
-build_aur_pkg() {
-  local pkg="$1"
-  local dir="$HOME/.cache/aur/$pkg"
-  say "Building AUR: $pkg"
-  mkdir -p "$dir"
-  if [[ ! -d "$dir/.git" ]]; then
-    git clone "https://aur.archlinux.org/$pkg.git" "$dir"
+# ---------- drivers & tools ----------
+echo "[PKG] Installing graphics drivers & tools…"
+pkg mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon vulkan-tools mesa-utils
+
+echo "[PKG] Installing wallpaper helpers…"
+pkg swww imagemagick
+
+# ---------- wallpaper: ensure ~/Pictures/wallpaper.png exists ----------
+WP_DIR="$HOME/Pictures"
+WP="$WP_DIR/wallpaper.png"
+mkdir -p "$WP_DIR"
+
+if [ ! -f "$WP" ]; then
+  echo "[WP] No ~/Pictures/wallpaper.png found. Creating one…"
+  # 1) Try to copy a system background
+  SYS_BG="$(find /usr/share/backgrounds /usr/share/pixmaps -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) 2>/dev/null | head -n1 || true)"
+  if [ -n "$SYS_BG" ]; then
+    cp -f "$SYS_BG" "$WP"
+    echo "[WP] Copied system image -> $WP"
   else
-    git -C "$dir" pull --ff-only || true
+    # 2) Generate a simple gradient placeholder with ImageMagick
+    convert -size 1920x1080 gradient:'#101216-#2a2f39' -gravity center -pointsize 64 -fill '#ffffff' \
+            -font DejaVu-Sans -annotate +0+0 'Caelestia' "$WP" || {
+      echo "[WP] Could not generate placeholder; creating a 1px PNG."
+      printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82' > "$WP"
+    }
+    echo "[WP] Generated -> $WP"
   fi
-  ( cd "$dir" && makepkg -si --noconfirm --needed )
-  ok "Installed AUR pkg: $pkg"
-}
-
-# ---- 0) sanity --------------------------------------------------------------
-command -v git >/dev/null 2>&1 || die "git missing (unexpected)."
-command -v pacman >/dev/null 2>&1 || die "This script is for Arch."
-
-# ---- 1) AMD graphics stack (Mesa/OpenGL/Vulkan) -----------------------------
-say "Installing AMD graphics stack (Mesa + Vulkan)…"
-require_root_pkgs mesa libglvnd vulkan-radeon vulkan-icd-loader
-# 32-bit libs are optional; only install if multilib is enabled
-if grep -q "^\[multilib\]" /etc/pacman.conf; then
-  require_root_pkgs lib32-mesa lib32-vulkan-radeon
 else
-  warn "Multilib not enabled; skipping 32-bit Mesa/Vulkan."
-fi
-ok "Graphics stack ready."
-
-# ---- 2) handy tools you already use (idempotent) ----------------------------
-say "Ensuring handy tools & fonts are present…"
-require_root_pkgs curl unzip swww wl-clipboard grim slurp swappy playerctl pamixer noto-fonts ttf-liberation
-ok "Tools/fonts ready."
-
-# ---- 3) Google Chrome via AUR ----------------------------------------------
-if ! command -v google-chrome >/dev/null 2>&1; then
-  say "Installing Google Chrome from AUR…"
-  require_root_pkgs base-devel
-  build_aur_pkg google-chrome
-else
-  ok "Google Chrome already installed."
+  echo "[WP] Found existing wallpaper: $WP"
 fi
 
-# ---- 4) Wallpaper helper (swww) --------------------------------------------
-say "Starting swww (Wayland wallpaper daemon) if needed…"
+# ---------- start swww & set wallpaper ----------
 if ! pgrep -x swww-daemon >/dev/null 2>&1; then
-  swww init || warn "swww init failed (will rely on Caelestia wallpaper)."
+  echo "[SWWW] Starting swww-daemon…"
+  swww init || true
+fi
+
+echo "[SWWW] Setting wallpaper…"
+swww img "$WP" --transition-type any --transition-step 90 --transition-fps 60 || true
+
+# ---------- quick health checks ----------
+echo
+echo "== Quick GL/Vulkan check =="
+if have glxinfo; then
+  glxinfo -B | sed -n '1,20p'
 else
-  ok "swww already running."
+  echo "glxinfo not found (mesa-utils should have installed it)."
 fi
 
-# Try to locate a wallpaper image to avoid 'missing wallpaper' screen
-WP_FILE=""
-for d in "${WALLPAPER_CANDIDATES[@]}"; do
-  if [[ -d "$d" ]]; then
-    WP_FILE="$(find "$d" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | head -n1 || true)"
-    [[ -n "$WP_FILE" ]] && break
-  fi
-done
-if [[ -n "${WP_FILE:-}" ]]; then
-  say "Found a wallpaper: $WP_FILE"
+if have vulkaninfo; then
+  echo
+  vulkaninfo 2>/dev/null | sed -n '1,40p'
 else
-  warn "No wallpaper image found. You can put one in ~/Pictures."
+  echo
+  echo "vulkaninfo not found (vulkan-tools should have installed it)."
 fi
 
-# ---- 5) Launch Caelestia via nix with proper env ---------------------------
-# Requires nix with flakes+command enabled (you already set that).
-say "Launching Caelestia (nix) with Wayland + QML path…"
-export QT_QPA_PLATFORM=wayland
-# Ensure Caelestia’s local qs modules are discoverable, if present
-if [[ -d "$CE_CFG/modules/qs" ]]; then
-  export QML2_IMPORT_PATH="$CE_CFG/modules/qs:${QML2_IMPORT_PATH-}"
-fi
-# Add system Qt6 QML dir as well (helps with some distros)
-if [[ -d "$QS_QML_SYS" ]]; then
-  export QML2_IMPORT_PATH="$QS_QML_SYS:${QML2_IMPORT_PATH-}"
-fi
-
-# Prefer your local config if it exists; otherwise nix will use packaged one.
-EXTRA_ARGS=()
-if [[ -n "${WP_FILE:-}" ]]; then
-  EXTRA_ARGS+=( --wallpaper "$WP_FILE" )
-fi
-
-# Finally run it. If you want it to keep running after the script exits,
-# start it in the background; otherwise leave foreground.
-set +e
-nix run github:caelestia-dots/shell -- "${EXTRA_ARGS[@]}"
-rc=$?
-set -e
-
-if [[ $rc -ne 0 ]]; then
-  warn "Caelestia (nix) exited with status $rc. Check the terminal logs above."
-else
-  ok "Caelestia started."
-fi
+echo
+echo "== Done =="
+echo "If you were seeing 'Failed to initialize graphics backend' or 'No wallpaper page found',"
+echo "they should be gone now. Re-run Caelestia:"
+echo
+echo "  nix run github:caelestia-dots/shell"
+echo
+echo "or your local launcher:"
+echo "  caelestia-shell"
+EOF

@@ -1,66 +1,66 @@
-bash -euo pipefail <<'EOF'
-echo "== Caelestia: clean old install and run via Nix =="
+#!/usr/bin/env bash
+set -euo pipefail
 
-# --- 0) Sanity: need nix
-if ! command -v nix >/dev/null 2>&1; then
-  echo "!! nix is not installed. Install Nix first, then re-run."
-  exit 1
-fi
+echo "== Caelestia AMD/Wayland one-shot repair =="
+[ "$(id -u)" -eq 0 ] && { echo "Please run as your normal user (it will sudo when needed)."; exit 1; }
 
-# --- 1) Stop any running quickshell/caelestia
-echo "[1/6] Stopping running quickshell sessions (if any)…"
-pkill -x quickshell 2>/dev/null || true
-sleep 0.5
+# ---------- 0) helpers ----------
+sudo_tee() { sudo tee "$1" >/dev/null; }
 
-# --- 2) Backup + remove old mixed install
-echo "[2/6] Backing up and removing previous Caelestia files…"
-TS="$(date +%Y%m%d-%H%M%S)"
-BK="$HOME/caelestia-backup-$TS"
-mkdir -p "$BK"
-
-# Move (backup) if present
-for P in \
-  "$HOME/.config/quickshell/caelestia" \
-  "$HOME/.cache/caelestia-src" \
-  "$HOME/.local/bin/caelestia-shell"
-do
-  if [ -e "$P" ]; then
-    echo "  ↳ backing up: $P -> $BK/"
-    mv "$P" "$BK/" || true
+# ---------- 1) Enable multilib (for lib32-vulkan-radeon) ----------
+PACCONF="/etc/pacman.conf"
+if ! grep -qE '^\[multilib\]' "$PACCONF"; then
+  echo "!! [multilib] section not found in $PACCONF — this Arch install looks unusual."
+else
+  if awk 'BEGIN{p=0} /^\[multilib\]/{p=1} /^\[/{if($0!~"^\[multilib\\]")p=0} {if(p&&$0~/^#?Include =/){print "HAVEINC"; exit}}' "$PACCONF" | grep -q HAVEINC; then
+    if grep -qE '^\s*#\s*\[multilib\]' "$PACCONF"; then
+      echo "[*] Enabling multilib in $PACCONF (creating backup)…"
+      sudo cp -n "$PACCONF" "$PACCONF.$(date +%Y%m%d%H%M%S).bak"
+      # Uncomment the block
+      sudo sed -i '/^\s*#\s*\[multilib\]/{s/#\s*\[multilib\]/[multilib]/;n;s/#\s*Include/Include/}' "$PACCONF"
+    fi
   fi
-done
-
-# --- 3) Ensure Nix experimental features (flakes + nix-command)
-echo "[3/6] Ensuring Nix experimental features enabled…"
-mkdir -p "$HOME/.config/nix"
-NIXCONF="$HOME/.config/nix/nix.conf"
-touch "$NIXCONF"
-if ! grep -q '^experimental-features.*flakes' "$NIXCONF" 2>/dev/null; then
-  printf '%s\n' 'experimental-features = nix-command flakes' >> "$NIXCONF"
-  echo "  ↳ wrote: experimental-features = nix-command flakes"
-else
-  echo "  ↳ already enabled."
 fi
 
-# --- 4) Optional: make sure swww daemon is ready for wallpapers (no-op if present)
-echo "[4/6] Ensuring swww daemon (Wayland wallpaper) is running…"
-if command -v swww >/dev/null 2>&1; then
-  pgrep -x swww-daemon >/dev/null 2>&1 || swww init || true
-else
-  echo "  (swww not installed system-wide; Caelestia can still run under Nix)"
+echo "[*] Syncing pacman db…"
+sudo pacman -Sy --noconfirm
+
+# ---------- 2) Install AMD + Vulkan stack ----------
+echo "[*] Installing AMD/Mesa/Vulkan (safe if already installed)…"
+sudo pacman -S --needed --noconfirm \
+  mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon \
+  vulkan-tools mesa-utils swww curl
+
+# ---------- 3) Minimal wallpaper + swww ----------
+mkdir -p "$HOME/Pictures"
+WP="$HOME/Pictures/archlinux_logo.png"
+if [ ! -s "$WP" ]; then
+  echo "[*] Fetching a tiny wallpaper to avoid 'missing wallpaper' warnings…"
+  curl -fsSL -o "$WP" https://raw.githubusercontent.com/archlinux/archinstall/main/archinstall/assets/archlinux-logo-dark-scaled.png || true
 fi
 
-# --- 5) Run Caelestia via Nix (pure source of truth)
-echo "[5/6] Launching Caelestia from Nix…"
-# Use env override too, in case user’s nix.conf wasn’t picked up yet in this session
-NIX_CONFIG="experimental-features = nix-command flakes" \
+# start swww if not running (ignore errors if already managed by your hypr config)
+if ! pgrep -x swww-daemon >/dev/null 2>&1; then
+  echo "[*] Starting swww-daemon…"
+  swww init || true
+fi
+# set a wallpaper (won’t crash if it fails)
+swww img "$WP" --transition-type none >/dev/null 2>&1 || true
+
+# ---------- 4) Quick sanity check of GPU stack (non-fatal) ----------
+echo "[i] Vulkan device summary:"
+vulkaninfo 2>/dev/null | sed -n '1,120p' | sed -n 's/.*deviceName.*/  &/p' || true
+
+# ---------- 5) Run Caelestia from Nix with Wayland + flakes ----------
+echo
+echo "[*] Launching Caelestia via Nix (Wayland)…"
+export QT_QPA_PLATFORM=wayland
+export NIX_CONFIG="extra-experimental-features = nix-command flakes"
+# If you previously installed caelesia system-wide, leaving it; Nix run will use its own build.
 nix run github:caelestia-dots/shell
 
-# --- 6) Notes
-echo "[6/6] Done."
 echo
-echo "If you want to launch again later, just run:"
-echo "  nix run github:caelestia-dots/shell"
-echo
-echo "Your old files were backed up at: $BK"
-EOF
+echo "== Done =="
+echo "If you still see 'Failed to create RHI/OpenGL context':"
+echo "  • Reboot once (kernel/driver reload)"
+echo "  • Then run:  QT_QPA_PLATFORM=wayland nix run github:caelestia-dots/shell"

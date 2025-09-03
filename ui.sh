@@ -1,92 +1,74 @@
 bash -euo pipefail <<'EOF'
-echo "== Caelestia quick-fix: AMD graphics + wallpaper =="
+# === Arch AMD Vulkan + multilib + Chrome (one-shot) ==========================
+echo "[0] Starting… (need sudo for pacman changes)"
+sudo -v
 
-# ---------- helpers ----------
-have() { command -v "$1" >/dev/null 2>&1; }
-pkg() { sudo pacman -Sy --needed --noconfirm "$@"; }
+PACCONF="/etc/pacman.conf"
+BACKUP="/etc/pacman.conf.$(date +%Y%m%d-%H%M%S).bak"
 
-# ---------- sanity: Arch only ----------
-if ! have pacman; then
-  echo "This script is for Arch/Arch-based systems (needs pacman)." >&2
-  exit 1
-fi
+echo "[1] Ensure [multilib] repo is enabled (backup: $BACKUP)…"
+# Backup once
+sudo cp -n "$PACCONF" "$BACKUP" || true
 
-# ---------- detect AMD GPU ----------
-GPU_LINE="$(lspci -nnk | grep -Ei 'VGA|3D|Display' | grep -Ei 'AMD|ATI' || true)"
-if [ -n "$GPU_LINE" ]; then
-  echo "[GPU] Detected AMD/ATI GPU:"
-  echo "      $GPU_LINE"
-  AMD=1
+# Uncomment the multilib block if it's still commented
+if grep -q '^\s*\[multilib\]' "$PACCONF"; then
+  echo "    - multilib already enabled."
 else
-  echo "[GPU] AMD GPU not detected. I’ll still install Mesa/Vulkan in case it’s hybrid."
-  AMD=0
+  # Typical commented block:
+  # [multilib] is commented as "#[multilib]" on some systems,
+  # and the Include line as "#Include = /etc/pacman.d/mirrorlist"
+  sudo sed -i \
+    -e 's/^\s*#\s*\[multilib\]/[multilib]/' \
+    -e 's|^\s*#\s*Include\s*=\s*/etc/pacman.d/mirrorlist|Include = /etc/pacman.d/mirrorlist|' \
+    "$PACCONF"
+  echo "    - multilib block uncommented."
 fi
 
-# ---------- drivers & tools ----------
-echo "[PKG] Installing graphics drivers & tools…"
-pkg mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon vulkan-tools mesa-utils
+echo "[2] Force sync & update package databases…"
+sudo pacman -Syyu --noconfirm
 
-echo "[PKG] Installing wallpaper helpers…"
-pkg swww imagemagick
+echo "[3] Install AMD Vulkan drivers & graphics tools…"
+# Core drivers + 32-bit, and tools for verification
+sudo pacman -S --needed --noconfirm \
+  vulkan-radeon lib32-vulkan-radeon \
+  mesa lib32-mesa libva-mesa-driver lib32-libva-mesa-driver \
+  vulkan-tools mesa-demos
 
-# ---------- wallpaper: ensure ~/Pictures/wallpaper.png exists ----------
-WP_DIR="$HOME/Pictures"
-WP="$WP_DIR/wallpaper.png"
-mkdir -p "$WP_DIR"
+echo "[4] Quick driver check (lspci)…"
+lspci | grep -E "VGA|3D|Display" || true
 
-if [ ! -f "$WP" ]; then
-  echo "[WP] No ~/Pictures/wallpaper.png found. Creating one…"
-  # 1) Try to copy a system background
-  SYS_BG="$(find /usr/share/backgrounds /usr/share/pixmaps -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) 2>/dev/null | head -n1 || true)"
-  if [ -n "$SYS_BG" ]; then
-    cp -f "$SYS_BG" "$WP"
-    echo "[WP] Copied system image -> $WP"
-  else
-    # 2) Generate a simple gradient placeholder with ImageMagick
-    convert -size 1920x1080 gradient:'#101216-#2a2f39' -gravity center -pointsize 64 -fill '#ffffff' \
-            -font DejaVu-Sans -annotate +0+0 'Caelestia' "$WP" || {
-      echo "[WP] Could not generate placeholder; creating a 1px PNG."
-      printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82' > "$WP"
-    }
-    echo "[WP] Generated -> $WP"
-  fi
+echo "[5] Verify Vulkan/GL — saving short reports to ~/gpu-diagnostics/"
+OUTDIR="$HOME/gpu-diagnostics"
+mkdir -p "$OUTDIR"
+# Vulkan summary (this prints errors to stdout too if any)
+if command -v vulkaninfo >/dev/null 2>&1; then
+  vulkaninfo --summary 2>&1 | tee "$OUTDIR/vulkaninfo-summary.txt" | head -n 50
 else
-  echo "[WP] Found existing wallpaper: $WP"
+  echo "vulkaninfo not found (vulkan-tools should have installed it)" | tee "$OUTDIR/vulkaninfo-summary.txt"
 fi
 
-# ---------- start swww & set wallpaper ----------
-if ! pgrep -x swww-daemon >/dev/null 2>&1; then
-  echo "[SWWW] Starting swww-daemon…"
-  swww init || true
-fi
-
-echo "[SWWW] Setting wallpaper…"
-swww img "$WP" --transition-type any --transition-step 90 --transition-fps 60 || true
-
-# ---------- quick health checks ----------
-echo
-echo "== Quick GL/Vulkan check =="
-if have glxinfo; then
-  glxinfo -B | sed -n '1,20p'
+# OpenGL / renderer info
+if command -v glxinfo >/dev/null 2>&1; then
+  glxinfo -B 2>&1 | tee "$OUTDIR/glxinfo-B.txt"
 else
-  echo "glxinfo not found (mesa-utils should have installed it)."
+  echo "glxinfo not found (mesa-demos should have installed it)" | tee "$OUTDIR/glxinfo-B.txt"
 fi
 
-if have vulkaninfo; then
-  echo
-  vulkaninfo 2>/dev/null | sed -n '1,40p'
+echo "[6] Browser: install Google Chrome if AUR helper exists, else Chromium…"
+if command -v yay >/dev/null 2>&1; then
+  echo "    - Using yay to install google-chrome (AUR)…"
+  yay -S --needed --noconfirm google-chrome
+elif command -v paru >/dev/null 2>&1; then
+  echo "    - Using paru to install google-chrome (AUR)…"
+  paru -S --needed --noconfirm google-chrome
 else
-  echo
-  echo "vulkaninfo not found (vulkan-tools should have installed it)."
+  echo "    - No AUR helper found. Installing Chromium from official repos."
+  sudo pacman -S --needed --noconfirm chromium
 fi
 
 echo
-echo "== Done =="
-echo "If you were seeing 'Failed to initialize graphics backend' or 'No wallpaper page found',"
-echo "they should be gone now. Re-run Caelestia:"
-echo
-echo "  nix run github:caelestia-dots/shell"
-echo
-echo "or your local launcher:"
-echo "  caelestia-shell"
+echo "=== Done ==="
+echo "Diagnostics saved to: $OUTDIR"
+echo "If you were seeing 'Failed to initialize graphics backend' before, try re-running your Caelestia/Hyprland session."
+echo "Tip: reboot once after new GPU drivers, then try:  nix run github:caelestia-dots/shell  or your  caelestia-shell  launcher."
 EOF

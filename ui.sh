@@ -16,15 +16,19 @@ echo "[2/4] Install shell files…"
 mkdir -p "$CFG"
 rsync -a --delete "$CACHE/shell/shell.qml" "$CFG/"
 rsync -a --delete "$CACHE/shell/modules/" "$CFG/modules/"
-rsync -a --delete "$CACHE/shell/themes/" "$CFG/themes/"
-rsync -a --delete "$CACHE/shell/config/" "$CFG/config/"
+
+# only copy if folder exists
+for d in themes config; do
+  if [ -d "$CACHE/shell/$d" ]; then
+    rsync -a --delete "$CACHE/shell/$d/" "$CFG/$d/"
+    echo "✓ Copied $d/"
+  else
+    echo "!! Skipping $d/ (not present in repo)"
+  fi
+done
 
 echo "[3/4] Verify structure…"
 ls -1 "$CFG"
-ls -1 "$CFG/modules" | head
-ls -1 "$CFG/themes" | head
 
 echo "[4/4] Done. Launch with:"
 echo "   caelestia-shell"
-echo
-echo "Now you should see themes + modules."

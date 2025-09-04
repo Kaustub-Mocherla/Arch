@@ -1,66 +1,103 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "== Caelestia AMD/Wayland one-shot repair =="
-[ "$(id -u)" -eq 0 ] && { echo "Please run as your normal user (it will sudo when needed)."; exit 1; }
+# --- Safety checks ---
+if ! command -v pacman >/dev/null 2>&1; then
+  echo "This script is for Arch/Arch-based systems (uses pacman). Exiting."
+  exit 1
+fi
 
-# ---------- 0) helpers ----------
-sudo_tee() { sudo tee "$1" >/dev/null; }
+if [[ $EUID -eq 0 ]]; then
+  echo "Please run as a normal user (the script will use sudo)."
+  exit 1
+fi
 
-# ---------- 1) Enable multilib (for lib32-vulkan-radeon) ----------
-PACCONF="/etc/pacman.conf"
-if ! grep -qE '^\[multilib\]' "$PACCONF"; then
-  echo "!! [multilib] section not found in $PACCONF — this Arch install looks unusual."
-else
-  if awk 'BEGIN{p=0} /^\[multilib\]/{p=1} /^\[/{if($0!~"^\[multilib\\]")p=0} {if(p&&$0~/^#?Include =/){print "HAVEINC"; exit}}' "$PACCONF" | grep -q HAVEINC; then
-    if grep -qE '^\s*#\s*\[multilib\]' "$PACCONF"; then
-      echo "[*] Enabling multilib in $PACCONF (creating backup)…"
-      sudo cp -n "$PACCONF" "$PACCONF.$(date +%Y%m%d%H%M%S).bak"
-      # Uncomment the block
-      sudo sed -i '/^\s*#\s*\[multilib\]/{s/#\s*\[multilib\]/[multilib]/;n;s/#\s*Include/Include/}' "$PACCONF"
-    fi
+# --- Helpers ---
+install_pkgs() {
+  sudo pacman -S --needed --noconfirm "$@"
+}
+
+echo "==> Updating system..."
+sudo pacman -Syu --noconfirm
+
+echo "==> Installing core packages (Hyprland, portals, tools, SDDM)..."
+install_pkgs hyprland xdg-desktop-portal-hyprland wl-clipboard \
+             qt5-wayland qt6-wayland polkit \
+             waybar wofi grim slurp \
+             sddm
+
+# --- GPU drivers (best-effort detection) ---
+GPU_INFO="$(lspci -nnk | grep -E "VGA|3D|Display" || true)"
+echo "==> Detected GPU: $GPU_INFO"
+
+if echo "$GPU_INFO" | grep -qi nvidia; then
+  echo "==> Installing NVIDIA drivers..."
+  install_pkgs nvidia nvidia-utils nvidia-settings
+  # Add a safe env tweak for cursors on some NVIDIA setups
+  mkdir -p "$HOME/.config/hypr"
+  if ! grep -q "WLR_NO_HARDWARE_CURSORS" "$HOME/.config/hypr/hyprland.conf" 2>/dev/null; then
+    echo "env = WLR_NO_HARDWARE_CURSORS,1" >> "$HOME/.config/hypr/hyprland.conf" || true
   fi
+elif echo "$GPU_INFO" | grep -qiE "AMD|ATI"; then
+  echo "==> Installing AMD/Mesa drivers..."
+  install_pkgs mesa vulkan-radeon libva-mesa-driver
+elif echo "$GPU_INFO" | grep -qi intel; then
+  echo "==> Installing Intel/Mesa drivers..."
+  install_pkgs mesa vulkan-intel intel-media-driver
+else
+  echo "==> Unknown GPU vendor; skipping vendor-specific drivers."
 fi
 
-echo "[*] Syncing pacman db…"
-sudo pacman -Sy --noconfirm
+# --- SDDM Hyprland session entry ---
+echo "==> Creating Hyprland Wayland session for SDDM..."
+sudo mkdir -p /usr/share/wayland-sessions
+sudo tee /usr/share/wayland-sessions/hyprland.desktop >/dev/null <<'EOF'
+[Desktop Entry]
+Name=Hyprland
+Comment=Hyprland Session (Wayland)
+Exec=dbus-run-session /usr/bin/Hyprland
+Type=Application
+EOF
 
-# ---------- 2) Install AMD + Vulkan stack ----------
-echo "[*] Installing AMD/Mesa/Vulkan (safe if already installed)…"
-sudo pacman -S --needed --noconfirm \
-  mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon \
-  vulkan-tools mesa-utils swww curl
-
-# ---------- 3) Minimal wallpaper + swww ----------
-mkdir -p "$HOME/Pictures"
-WP="$HOME/Pictures/archlinux_logo.png"
-if [ ! -s "$WP" ]; then
-  echo "[*] Fetching a tiny wallpaper to avoid 'missing wallpaper' warnings…"
-  curl -fsSL -o "$WP" https://raw.githubusercontent.com/archlinux/archinstall/main/archinstall/assets/archlinux-logo-dark-scaled.png || true
+# --- Minimal Hypr config (only if you don't already have one) ---
+if [[ ! -d "$HOME/.config/hypr" ]] || [[ ! -s "$HOME/.config/hypr/hyprland.conf" ]]; then
+  echo "==> Installing a minimal, safe Hyprland config (non-destructive)..."
+  mkdir -p "$HOME/.config/hypr"
+  cat > "$HOME/.config/hypr/hyprland.conf" <<'EOF'
+# Minimal safe Hyprland config (you can replace with Caelestia configs later)
+monitor=,preferred,auto,1
+input {
+  kb_layout = us
+}
+# Basic utilities (Waybar + app launcher). Comment these if Caelestia handles them.
+exec-once = waybar &
+exec-once = wofi --show drun &
+# Tiling defaults
+general {
+  gaps_in = 5
+  gaps_out = 10
+}
+EOF
+else
+  echo "==> Existing Hypr config found; not overwriting."
 fi
 
-# start swww if not running (ignore errors if already managed by your hypr config)
-if ! pgrep -x swww-daemon >/dev/null 2>&1; then
-  echo "[*] Starting swww-daemon…"
-  swww init || true
-fi
-# set a wallpaper (won’t crash if it fails)
-swww img "$WP" --transition-type none >/dev/null 2>&1 || true
+# --- Permissions sanity (common SDDM gotcha) ---
+echo "==> Ensuring sane home permissions..."
+sudo chown -R "$USER:$USER" "$HOME"
+chmod 700 "$HOME"
 
-# ---------- 4) Quick sanity check of GPU stack (non-fatal) ----------
-echo "[i] Vulkan device summary:"
-vulkaninfo 2>/dev/null | sed -n '1,120p' | sed -n 's/.*deviceName.*/  &/p' || true
+# --- Enable SDDM ---
+echo "==> Enabling SDDM..."
+sudo systemctl enable sddm.service
 
-# ---------- 5) Run Caelestia from Nix with Wayland + flakes ----------
 echo
-echo "[*] Launching Caelestia via Nix (Wayland)…"
-export QT_QPA_PLATFORM=wayland
-export NIX_CONFIG="extra-experimental-features = nix-command flakes"
-# If you previously installed caelesia system-wide, leaving it; Nix run will use its own build.
-nix run github:caelestia-dots/shell
-
+echo "============================================================"
+echo "All set! Next steps:"
+echo "1) Reboot: sudo reboot"
+echo "2) At the SDDM login screen, pick the 'Hyprland' session."
+echo "3) Log in. You should land in Hyprland (Caelestia configs will load if present)."
 echo
-echo "== Done =="
-echo "If you still see 'Failed to create RHI/OpenGL context':"
-echo "  • Reboot once (kernel/driver reload)"
-echo "  • Then run:  QT_QPA_PLATFORM=wayland nix run github:caelestia-dots/shell"
+echo "If you get bounced back to SDDM, switch to TTY (Ctrl+Alt+F2) and run:"
+echo "  tail -n 200 ~/.local/share/sddm/wayland-session.log"
+echo "============================================================"

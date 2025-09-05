@@ -1,49 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v pacman >/dev/null 2>&1; then
-  echo "This script is for Arch/Arch-based systems only."; exit 1
-fi
-if [[ $EUID -eq 0 ]]; then
-  echo "Run as normal user (script will sudo as needed)."; exit 1
-fi
+# === 0) Preconditions (Arch / not root) ===
+if ! command_v() { command -v "$1" >/dev/null 2>&1; }; then true; fi
+if ! command_v pacman; then echo "This script is for Arch-based systems."; exit 1; fi
+if [[ $EUID -eq 0 ]]; then echo "Run as normal user (script uses sudo)."; exit 1; fi
 
-echo "==> Full system sync"
+# === 1) Full system update (video does this early) ===
 sudo pacman -Syu --noconfirm
 
-echo "==> Install Hyprland + deps"
+# === 2) Install SDDM (video installs & enables it) ===
+sudo pacman -S --needed --noconfirm sddm
+sudo systemctl enable sddm
+
+# === 3) Install Hyprland + the components used in the video/caelestia ===
 sudo pacman -S --needed --noconfirm \
-  hyprland hyprpaper waybar wofi kitty mako \
-  swww grim slurp swappy \
-  thunar gvfs gvfs-mtp gvfs-smb \
+  hyprland hyprpaper swww waybar wofi mako kitty thunar \
   pipewire pipewire-pulse wireplumber \
+  xdg-desktop-portal-hyprland wl-clipboard \
+  qt5-wayland qt6-wayland \
   networkmanager network-manager-applet \
   bluez bluez-utils blueman \
-  xdg-desktop-portal-hyprland qt5-wayland qt6-wayland wl-clipboard \
+  gvfs gvfs-mtp gvfs-smb \
   brightnessctl playerctl \
-  ttf-jetbrains-mono-nerd ttf-nerd-fonts-symbols noto-fonts noto-fonts-cjk noto-fonts-emoji
+  git fish starship \
+  noto-fonts noto-fonts-cjk noto-fonts-emoji ttf-jetbrains-mono-nerd ttf-nerd-fonts-symbols
 
-# GPU drivers (best-effort)
-GPU_INFO="$(lspci -nnk | grep -E 'VGA|3D|Display' || true)"
-echo "==> GPU: $GPU_INFO"
-if grep -qi nvidia <<<"$GPU_INFO"; then
-  sudo pacman -S --needed --noconfirm nvidia nvidia-utils nvidia-settings
-  mkdir -p "$HOME/.config/hypr"
-  grep -q "WLR_NO_HARDWARE_CURSORS" "$HOME/.config/hypr/hyprland.conf" 2>/dev/null || \
-    echo "env = WLR_NO_HARDWARE_CURSORS,1" >> "$HOME/.config/hypr/hyprland.conf"
-elif grep -qiE "AMD|ATI" <<<"$GPU_INFO"; then
-  sudo pacman -S --needed --noconfirm mesa vulkan-radeon libva-mesa-driver
-elif grep -qi intel <<<"$GPU_INFO"; then
-  sudo pacman -S --needed --noconfirm mesa vulkan-intel intel-media-driver
-fi
-
-echo "==> Ensure Hyprland Wayland session entry"
+# === 4) Ensure Hyprland session entry for SDDM (video logs in via SDDM -> Hyprland) ===
 sudo mkdir -p /usr/share/wayland-sessions
-# If a manual file exists, let the package version win
-if [[ -f /usr/share/wayland-sessions/hyprland.desktop ]]; then
-  sudo pacman -S --noconfirm hyprland --overwrite usr/share/wayland-sessions/hyprland.desktop
-fi
-# Force the robust Exec line
 sudo tee /usr/share/wayland-sessions/hyprland.desktop >/dev/null <<'EOF'
 [Desktop Entry]
 Name=Hyprland
@@ -52,71 +36,24 @@ Exec=dbus-run-session /usr/bin/Hyprland
 Type=Application
 EOF
 
-echo "==> Prepare Hypr config; disable crashing autostarts"
-mkdir -p "$HOME/.config/hypr"
-CFG="$HOME/.config/hypr/hyprland.conf"
-TS=$(date +%Y%m%d-%H%M%S)
-if [[ -f "$CFG" ]]; then
-  cp -a "$CFG" "$CFG.bak.$TS"
-else
-  cat > "$CFG" <<'EOF'
-# Minimal safe Hypr config (created by script)
-monitor=,preferred,auto,1
-input { kb_layout = us }
-general { gaps_in = 5; gaps_out = 10 }
-# Add your Caelestia config later below
-EOF
-fi
-
-# Comment out all exec-once lines temporarily
-if grep -q 'exec-once' "$CFG"; then
-  sed -i 's/^\s*exec-once\s*=/## disabled-by-script: exec-once =/g' "$CFG"
-fi
-
-# Provide helper to re-enable them later
-RE_EN="$HOME/.local/bin/enable_exec_once.sh"
-mkdir -p "$HOME/.local/bin"
-cat > "$RE_EN" <<'EOS'
-#!/usr/bin/env bash
-set -euo pipefail
-CFG="$HOME/.config/hypr/hyprland.conf"
-if [[ ! -f "$CFG" ]]; then echo "No hyprland.conf found"; exit 1; fi
-cp -a "$CFG" "$CFG.reenable.bak.$(date +%Y%m%d-%H%M%S)"
-# Un-comment the lines we previously disabled
-sed -i 's/^## disabled-by-script: exec-once =/exec-once =/g' "$CFG"
-echo "Re-enabled exec-once lines. Run: hyprctl reload -r"
-EOS
-chmod +x "$RE_EN"
-
-echo "==> Enable core services (NetworkManager, Bluetooth, SDDM)"
+# === 5) Enable core services (video uses networking, BT) ===
 sudo systemctl enable --now NetworkManager
 sudo systemctl enable --now bluetooth || true
-sudo systemctl enable sddm
 
-echo "==> Permissions sanity"
+# === 6) Get Caelestia shell and run its installer (video runs install.fish) ===
+rm -rf "$HOME/caelestia-shell"
+git clone https://github.com/caelestia-dots/shell "$HOME/caelestia-shell"
+cd "$HOME/caelestia-shell"
+fish ./install.fish
+
+# === 7) Final touches ===
 sudo chown -R "$USER:$USER" "$HOME"
 chmod 700 "$HOME"
 
-cat <<EOM
-
-============================================================
-Done.
-
-NEXT:
-1) Reboot:   sudo reboot
-2) In SDDM -> choose "Hyprland" session and log in.
-   (Autostarts are temporarily disabled to prevent crashes.)
-3) Once stable, re-enable autostarts:
-     $RE_EN
-   then inside Hyprland:
-     hyprctl reload -r
-
-If you get bounced back to SDDM, check:
-  tail -n 200 ~/.local/share/sddm/wayland-session.log
-Or try from TTY:
-  dbus-run-session /usr/bin/Hyprland
-
-You can restore your original config from:
-  $CFG.bak.$TS
-============================================================
-EOM
+echo
+echo "============================================================"
+echo "Done (as per the video)."
+echo "• Reboot now:  sudo reboot"
+echo "• At SDDM, pick the 'Hyprland' session and log in."
+echo "You should see Caelestia-shell."
+echo "============================================================"

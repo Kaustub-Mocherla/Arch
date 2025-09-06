@@ -1,21 +1,34 @@
 #!/bin/bash
-# Custom Beautiful Hyprland - Designed for Your Hardware
+# Fixed Hyprland Config with New Syntax``` Remove broken ML4W configs
+rm -rf ~/.config/hypr ~/.config/waybar
 
-echo "🎨 Creating Custom Beautiful Hyprland Setup"
-
-# Step 1: Clean slate - remove failed installations
-rm -rf ~/.config/hypr ~/.config/waybar ~/.config/ags 2>/dev/null
-
-# Step 2: Create beautiful, working Hyprland config
+# Create working config with NEW decoration syntax
 mkdir -p ~/.config/hypr
 cat > ~/.config/hypr/hyprland.conf << 'EOF'
-# Beautiful Hyprland Config - Optimized for Acer One 14 Z2-493
-monitor=,preferred,auto,1
+# Working Hyprland Config - Updated Syntax
+monitor=,preferred,auto
 
 input {
     kb_layout = us
     follow_mouse = 1
-    sensitivity = 0
+}
+
+decoration {
+    rounding = 8
+    # NEW shadow syntax (not drop_shadow)
+    shadow {
+        enabled = true
+        range = 4
+        render_power = 3
+        color = rgba(1a1a1aee)
+    }
+    # NEW blur syntax
+    blur {
+        enabled = true
+        size = 3
+        passes = 1
+        new_optimizations = true
+    }
 }
 
 general {
@@ -27,22 +40,6 @@ general {
     layout = dwindle
 }
 
-decoration {
-    rounding = 8
-    shadow {
-        enabled = true
-        range = 4
-        render_power = 3
-        color = rgba(1a1a1aee)
-    }
-    blur {
-        enabled = true
-        size = 3
-        passes = 1
-        new_optimizations = true
-    }
-}
-
 animations {
     enabled = true
     bezier = myBezier, 0.05, 0.9, 0.1, 1.05
@@ -52,22 +49,13 @@ animations {
     animation = workspaces, 1, 6, default
 }
 
-dwindle {
-    pseudotile = true
-    preserve_split = true
-}
-
-# Keybinds
+# Essential keybinds
 $mainMod = SUPER
 bind = $mainMod, Q, exec, kitty
 bind = $mainMod, C, killactive
 bind = $mainMod, M, exit
-bind = $mainMod, E, exec, dolphin
-bind = $mainMod, V, togglefloating
 bind = $mainMod, R, exec, wofi --show drun
-bind = $mainMod, P, pseudo
-bind = $mainMod, J, togglesplit
-bind = $mainMod, F, fullscreen
+bind = $mainMod, E, exec, dolphin
 
 # Workspaces
 bind = $mainMod, 1, workspace, 1
@@ -85,12 +73,12 @@ bind = $mainMod SHIFT, 5, movetoworkspace, 5
 bindm = $mainMod, mouse:272, movewindow
 bindm = $mainMod, mouse:273, resizewindow
 
-# Autostart - MINIMAL for your hardware
+# Autostart
 exec-once = waybar
 exec-once = hyprpaper
 EOF
 
-# Step 3: Create beautiful waybar config
+# Create simple waybar config
 mkdir -p ~/.config/waybar
 cat > ~/.config/waybar/config << 'EOF'
 {
@@ -102,12 +90,10 @@ cat > ~/.config/waybar/config << 'EOF'
     "modules-right": ["battery", "network", "pulseaudio"],
     
     "hyprland/workspaces": {
-        "format": "{id}",
-        "on-click": "activate"
+        "format": "{id}"
     },
     "clock": {
-        "format": "{:%H:%M}",
-        "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>"
+        "format": "{:%H:%M}"
     },
     "battery": {
         "format": "{capacity}% {icon}",
@@ -115,7 +101,7 @@ cat > ~/.config/waybar/config << 'EOF'
     },
     "network": {
         "format-wifi": "{essid} ",
-        "format-disconnected": "Disconnected "
+        "format-disconnected": "Disconnected"
     },
     "pulseaudio": {
         "format": "{volume}% {icon}",
@@ -124,32 +110,31 @@ cat > ~/.config/waybar/config << 'EOF'
 }
 EOF
 
-# Step 4: Beautiful waybar styling
-cat > ~/.config/waybar/style.css << 'EOF'
-* {
+# Create waybar styling
+cat > ~/.config/waybar/style.css << 'EOF'```{
     font-family: "JetBrains Mono", monospace;
     font-size: 13px;
+    font-weight: bold;
 }
 
 window#waybar {
     background-color: rgba(30, 30, 46, 0.9);
     color: #cdd6f4;
-    transition-property: background-color;
-    transition-duration: .5s;
-    border-radius: 0;
+    border-radius: 12px;
+    margin: 5px;
 }
 
 #workspaces {
     background-color: rgba(69, 71, 90, 0.8);
     margin: 5px;
-    padding: 0px 5px;
+    padding: 0px 10px;
     border-radius: 10px;
 }
 
 #workspaces button {
     padding: 5px 10px;
-    margin: 4px 2px;
-    border-radius: 10px;
+    margin: 2px;
+    border-radius: 8px;
     color: #45475a;
     background-color: transparent;
 }
@@ -167,55 +152,26 @@ window#waybar {
     margin: 5px;
 }
 
-#battery {
+#battery, #network, #pulseaudio {
     background-color: rgba(166, 227, 161, 0.8);
     color: #11111b;
     border-radius: 10px;
     padding: 0 15px;
     margin: 5px;
 }
-
-#network {
-    background-color: rgba(116, 199, 236, 0.8);
-    color: #11111b;
-    border-radius: 10px;
-    padding: 0 15px;
-    margin: 5px;
-}
-
-#pulseaudio {
-    background-color: rgba(245, 194, 231, 0.8);
-    color: #11111b;
-    border-radius: 10px;
-    padding: 0 15px;
-    margin: 5px;
-}
 EOF
 
-# Step 5: Simple wallpaper setup
-mkdir -p ~/.config/hypr
+# Create basic wallpaper config
 cat > ~/.config/hypr/hyprpaper.conf << 'EOF'
 preload = /usr/share/pixmaps/archlinux-logo.png
 wallpaper = ,/usr/share/pixmaps/archlinux-logo.png
 ipc = on
 EOF
 
-# Step 6: Start the components
-echo "🚀 Starting your custom beautiful desktop..."
+# Start components
+echo "🚀 Starting components..."
 waybar &
 hyprpaper &
 
-echo "✅ Custom Beautiful Hyprland Setup Complete!"
-echo ""
-echo "🎨 What you now have:"
-echo "   ✅ Beautiful rounded corners and blur"
-echo "   ✅ Colorful waybar with system info"
-echo "   ✅ Smooth animations (optimized for your hardware)"
-echo "   ✅ Professional appearance"
-echo "   ✅ Stable and working"
-echo ""
-echo "🔑 Your shortcuts:"
-echo "   • Super + Q → Terminal"
-echo "   • Super + R → App launcher"
-echo "   • Super + E → File manager"
-echo "   • Super + 1,2,3,4,5 → Workspaces"
+echo "✅ Fixed Hyprland setup complete!"
+echo "🎨 You should now see waybar and wallpaper!"````

@@ -1,294 +1,178 @@
-#!/usr/bin/env bash
-set -euo pipefail
+# Backup current broken config
+mv ~/.config/hypr/hyprland.conf ~/.config/hypr/hyprland.conf.broken
 
-# ===============================
-# Caelestia Stocks – One-shot installer
-# - Creates a python venv under ~/.local/share/caelestia-stocks/venv
-# - Installs yfinance (and deps) in the venv
-# - Writes a tiny Python fetcher and a wrapper binary: ~/.local/bin/caelestia-stocks
-# - Sets up a cache + optional systemd user timer (off by default; enable with --timer)
-# - Adds a default tickers file: ~/.config/caelestia/stocks.txt
-# ===============================
+# Create a working configuration
+cat > ~/.config/hypr/hyprland.conf << 'EOF'
+# Hyprland Configuration - Fixed Version
+# Monitor setup
+monitor=,preferred,auto,1
 
-### UX helpers
-cinfo()  { printf "\033[1;36m[i]\033[0m %s\n" "$*"; }
-cok()    { printf "\033[1;32m[✓]\033[0m %s\n" "$*"; }
-cwarn()  { printf "\033[1;33m[!]\033[0m %s\n" "$*"; }
-cfail()  { printf "\033[1;31m[x]\033[0m %s\n" "$*" >&2; }
-die()    { cfail "$*"; exit 1; }
-
-### Resolve target user and HOME even when run with sudo
-TARGET_USER="${SUDO_USER:-${USER}}"
-TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-[[ -z "${TARGET_HOME}" ]] && TARGET_HOME="$HOME"
-
-### Paths
-BASE_DIR="$TARGET_HOME/.local/share/caelestia-stocks"
-VENV_DIR="$BASE_DIR/venv"
-BIN_DIR="$TARGET_HOME/.local/bin"
-CONF_DIR="$TARGET_HOME/.config/caelestia"
-TICKERS_FILE="$CONF_DIR/stocks.txt"
-CACHE_FILE="$BASE_DIR/cache.json"
-WRAPPER_BIN="$BIN_DIR/caelestia-stocks"
-FETCH_PY="$BASE_DIR/stocks_fetch.py"
-PRINT_PY="$BASE_DIR/stocks_print.py"
-SVC_DIR="$TARGET_HOME/.config/systemd/user"
-SVC_FILE="$SVC_DIR/caelestia-stocks.service"
-TMR_FILE="$SVC_DIR/caelestia-stocks.timer"
-
-# Whether to install + enable systemd timer
-USE_TIMER=0
-if [[ "${1-}" == "--timer" ]]; then USE_TIMER=1; fi
-
-### Run-as-user helper (even if script was launched with sudo)
-if [[ "$EUID" -eq 0 && -n "${SUDO_USER:-}" ]]; then
-  RUN_AS_USER=(sudo -u "$TARGET_USER" -H)
-else
-  RUN_AS_USER=()
-fi
-
-cinfo "Installing Caelestia Stocks for user: $TARGET_USER"
-cinfo "Home: $TARGET_HOME"
-
-# 1) Ensure base dirs
-mkdir -p "$BASE_DIR" "$BIN_DIR" "$CONF_DIR" "$SVC_DIR"
-
-# 2) Ensure python + venv tooling
-cinfo "Ensuring Python and venv tools…"
-if command -v python >/dev/null 2>&1; then
-  cok "python is present"
-else
-  if [[ "$EUID" -ne 0 ]]; then
-    cwarn "python is missing. Install with: sudo pacman -S python"
-  else
-    pacman -Sy --noconfirm --needed python || die "Failed to install python"
-  fi
-fi
-
-# Arch packages: python-pip is useful; python-virtualenv provides 'virtualenv' but we use 'python -m venv'
-if [[ "$EUID" -eq 0 ]]; then
-  pacman -Sy --noconfirm --needed python-pip >/dev/null || true
-fi
-
-# 3) Create venv (idempotent)
-if [[ ! -d "$VENV_DIR" ]]; then
-  cinfo "Creating venv at: $VENV_DIR"
-  mkdir -p "$BASE_DIR"
-  "${RUN_AS_USER[@]}" python -m venv "$VENV_DIR" || die "Failed to create venv"
-else
-  cok "Venv already exists"
-fi
-
-# 4) Upgrade pip & install deps in venv
-cinfo "Installing Python deps in venv (yfinance, requests)…"
-"${RUN_AS_USER[@]}" bash -lc "source '$VENV_DIR/bin/activate' \
-  && python -m pip install --upgrade pip >/dev/null \
-  && python -m pip install --disable-pip-version-check -q yfinance requests" \
-  || die "pip install failed"
-
-cok "Python deps installed"
-
-# 5) Default tickers file (idempotent)
-if [[ ! -f "$TICKERS_FILE" ]]; then
-  cat >"$TICKERS_FILE" <<'EOF'
-# One ticker per line. NSE use .NS suffix.
-# Examples:
-INFY.NS
-TCS.NS
-HDFCBANK.NS
-^NSEI
-AAPL
-MSFT
-EOF
-  chown "$TARGET_USER":"$TARGET_USER" "$TICKERS_FILE"
-  cok "Created $TICKERS_FILE (edit to your liking)"
-else
-  cok "Tickers file already exists ($TICKERS_FILE)"
-fi
-
-# 6) Write Python fetcher (creates/refreshes cache.json)
-cat >"$FETCH_PY" <<'PYEOF'
-import os, sys, json, time
-from datetime import datetime
-TICKERS_ENV = os.environ.get("CAE_STOCK_TICKERS", "").strip()
-TICKERS_FILE = os.environ.get("CAE_STOCK_TICKERS_FILE", os.path.expanduser("~/.config/caelestia/stocks.txt"))
-CACHE_FILE   = os.environ.get("CAE_STOCK_CACHE",        os.path.expanduser("~/.local/share/caelestia-stocks/cache.json"))
-
-def load_tickers():
-    if TICKERS_ENV:
-        return [t.strip() for t in TICKERS_ENV.split(",") if t.strip()]
-    try:
-        with open(TICKERS_FILE, "r") as f:
-            lines = []
-            for line in f:
-                s=line.strip()
-                if not s or s.startswith("#"): continue
-                lines.append(s)
-            return lines
-    except Exception:
-        return []
-
-def fetch(tickers):
-    import yfinance as yf
-    out=[]
-    if not tickers:
-        return out
-    data = yf.download(tickers=" ".join(tickers), period="1d", interval="1m", progress=False, threads=True)
-    # When multiple tickers, columns are MultiIndex; simplify:
-    now = datetime.now().isoformat(timespec="seconds")
-    for t in tickers:
-        try:
-            # preferred: use fast info
-            info = yf.Ticker(t).fast_info
-            price = float(info.get("last_price") or info.get("last_close") or 0.0)
-            pc    = float(info.get("previous_close") or 0.0)
-        except Exception:
-            # fallback from download frame
-            try:
-                if isinstance(data.columns, tuple) or hasattr(data.columns, "levels"):
-                    close_series = data["Close"][t].dropna()
-                else:
-                    close_series = data["Close"].dropna()
-                price = float(close_series.iloc[-1])
-                pc    = float(close_series.iloc[0])
-            except Exception:
-                continue
-        if price == 0 or pc == 0:
-            chg_pct = 0.0
-        else:
-            chg_pct = (price - pc) / pc * 100.0
-        out.append({
-            "ticker": t,
-            "price": round(price, 2),
-            "change_pct": round(chg_pct, 2),
-            "ts": now
-        })
-    return out
-
-def main():
-    tickers = load_tickers()
-    try:
-        data = fetch(tickers)
-    except Exception as e:
-        data = {"error": str(e), "tickers": tickers, "ts": datetime.now().isoformat(timespec="seconds")}
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-    with open(CACHE_FILE, "w") as f:
-        json.dump({"data": data, "ts": int(time.time())}, f)
-    print(CACHE_FILE)
-
-if __name__ == "__main__":
-    main()
-PYEOF
-chown "$TARGET_USER":"$TARGET_USER" "$FETCH_PY"
-
-# 7) Write quick printer (reads cache and prints compact line)
-cat >"$PRINT_PY" <<'PYEOF'
-import os, json
-CACHE_FILE = os.environ.get("CAE_STOCK_CACHE", os.path.expanduser("~/.local/share/caelestia-stocks/cache.json"))
-if not os.path.exists(CACHE_FILE):
-    print("stocks: no cache")
-    raise SystemExit(0)
-try:
-    with open(CACHE_FILE, "r") as f:
-        payload = json.load(f)
-    rows = payload.get("data", [])
-except Exception:
-    print("stocks: bad cache")
-    raise SystemExit(0)
-
-def fmt(row):
-    t = row["ticker"]
-    p = f'{row["price"]:.2f}'
-    ch = float(row["change_pct"])
-    arrow = "▲" if ch >= 0 else "▼"
-    return f"{t} {p} {arrow}{abs(ch):.2f}%"
-
-print("  |  ".join(fmt(r) for r in rows[:6]))
-PYEOF
-chown "$TARGET_USER":"$TARGET_USER" "$PRINT_PY"
-
-# 8) Wrapper binary: ~/.local/bin/caelestia-stocks
-cat >"$WRAPPER_BIN" <<'SHEOF'
-#!/usr/bin/env bash
-set -euo pipefail
-VENV="$HOME/.local/share/caelestia-stocks/venv"
-BASE="$HOME/.local/share/caelestia-stocks"
-FETCH="$BASE/stocks_fetch.py"
-PRINT="$BASE/stocks_print.py"
-
-# Refresh cache if older than 45s (lightweight)
-needs_refresh() {
-  [[ ! -f "$BASE/cache.json" ]] && return 0
-  now=$(date +%s)
-  mtime=$(stat -c %Y "$BASE/cache.json" 2>/dev/null || echo 0)
-  (( now - mtime > 45 ))
+# Input configuration  
+input {
+    kb_layout = us
+    follow_mouse = 1
+    touchpad {
+        natural_scroll = false
+    }
+    sensitivity = 0
 }
 
-if needs_refresh; then
-  "$VENV/bin/python" "$FETCH" >/dev/null 2>&1 || true
-fi
-exec "$VENV/bin/python" "$PRINT"
-SHEOF
-chmod +x "$WRAPPER_BIN"
-chown "$TARGET_USER":"$TARGET_USER" "$WRAPPER_BIN"
-cok "Installed command: $WRAPPER_BIN"
+# General settings
+general {
+    gaps_in = 5
+    gaps_out = 10
+    border_size = 2
+    col.active_border = rgba(33ccffee) rgba(00ff99ee) 45deg
+    col.inactive_border = rgba(595959aa)
+    layout = dwindle
+    allow_tearing = false
+}
 
-# 9) Optional systemd user service/timer (off by default)
-if (( USE_TIMER )); then
-  cinfo "Writing systemd user service + timer (refresh every 30s)…"
-  cat >"$SVC_FILE" <<SVC
-[Unit]
-Description=Caelestia Stocks Cache Updater
+# Decoration
+decoration {
+    rounding = 8
+    
+    blur {
+        enabled = true
+        size = 5
+        passes = 2
+        new_optimizations = true
+    }
+    
+    drop_shadow = true
+    shadow_range = 4
+    shadow_render_power = 3
+    col.shadow = rgba(1a1a1aee)
+}
 
-[Service]
-Type=oneshot
-ExecStart=$VENV_DIR/bin/python $FETCH_PY
-TimeoutSec=20
-SVC
-  cat >"$TMR_FILE" <<TMR
-[Unit]
-Description=Run Caelestia Stocks updater every 30 seconds
+# Animations
+animations {
+    enabled = true
+    bezier = myBezier, 0.05, 0.9, 0.1, 1.05
+    animation = windows, 1, 7, myBezier
+    animation = windowsOut, 1, 7, default, popin 80%
+    animation = border, 1, 10, default
+    animation = borderangle, 1, 8, default
+    animation = fade, 1, 7, default
+    animation = workspaces, 1, 6, default
+}
 
-[Timer]
-OnBootSec=30s
-OnUnitActiveSec=30s
-Unit=$(basename "$SVC_FILE")
+# Layout
+dwindle {
+    pseudotile = true
+    preserve_split = true
+}
 
-[Install]
-WantedBy=default.target
-TMR
-  chown "$TARGET_USER":"$TARGET_USER" "$SVC_FILE" "$TMR_FILE"
-  "${RUN_AS_USER[@]}" systemctl --user daemon-reload
-  "${RUN_AS_USER[@]}" systemctl --user enable --now "$(basename "$TMR_FILE")"
-  cok "Timer enabled (systemctl --user status $(basename "$TMR_FILE"))"
-else
-  cinfo "Timer not enabled. Re-run with '--timer' to install background refresh."
-fi
+# Master layout (alternative)
+master {
+    new_is_master = true
+}
 
-# 10) Final hints for Caelestia/Hyprland integration
-cat <<'NOTE'
+# Gestures
+gestures {
+    workspace_swipe = false
+}
 
-────────────────────────────────────────────────────────────────
-✅ Done.
+# Misc settings
+misc {
+    force_default_wallpaper = 0
+    disable_hyprland_logo = true
+    disable_splash_rendering = true
+}
 
-Use this command anywhere (panel, keybind, runner, qml):
-    caelestia-stocks
+# Window rules
+windowrulev2 = suppressevent maximize, class:.*
+windowrulev2 = float,class:^(kitty)$,title:^(float_kitty)$
+windowrulev2 = float,class:^(pavucontrol)$
+windowrulev2 = float,class:^(file_manager)$
 
-It prints a compact line like:
-    INFY.NS 1523.45 ▲0.80%  |  TCS.NS 4021.10 ▲0.15%  |  …
+# Keybindings
+$mainMod = SUPER
 
-Edit your tickers here:
-    ~/.config/caelestia/stocks.txt
-(One per line; NSE uses .NS suffix; supports ^NSEI, AAPL, etc.)
+# Application shortcuts
+bind = $mainMod, Q, exec, kitty
+bind = $mainMod, Return, exec, kitty
+bind = $mainMod, E, exec, thunar
+bind = $mainMod, R, exec, wofi --show drun
+bind = $mainMod, B, exec, firefox
 
-QML/panel integration idea (poll the command):
-    // In your QML, run caeslestia-stocks and display stdout
-    // Example snippets were printed in earlier instructions.
+# Window management
+bind = $mainMod, C, killactive,
+bind = $mainMod, M, exit,
+bind = $mainMod, V, togglefloating,
+bind = $mainMod, P, pseudo,
+bind = $mainMod, J, togglesplit,
+bind = $mainMod, F, fullscreen, 0
 
-Hyprland keybind example (append to ~/.config/caelestia/hypr-user.conf):
-    bind = $mainMod, S, exec, notify-send "$(caelestia-stocks)"
+# Focus movement
+bind = $mainMod, left, movefocus, l
+bind = $mainMod, right, movefocus, r
+bind = $mainMod, up, movefocus, u
+bind = $mainMod, down, movefocus, d
 
-(Then reload Hyprland.)
+# Move windows
+bind = $mainMod SHIFT, left, movewindow, l
+bind = $mainMod SHIFT, right, movewindow, r
+bind = $mainMod SHIFT, up, movewindow, u
+bind = $mainMod SHIFT, down, movewindow, d
 
-NOTE
-cok "Caelestia Stocks setup complete."
+# Workspace switching
+bind = $mainMod, 1, workspace, 1
+bind = $mainMod, 2, workspace, 2
+bind = $mainMod, 3, workspace, 3
+bind = $mainMod, 4, workspace, 4
+bind = $mainMod, 5, workspace, 5
+bind = $mainMod, 6, workspace, 6
+bind = $mainMod, 7, workspace, 7
+bind = $mainMod, 8, workspace, 8
+bind = $mainMod, 9, workspace, 9
+bind = $mainMod, 0, workspace, 10
+
+# Move window to workspace
+bind = $mainMod SHIFT, 1, movetoworkspace, 1
+bind = $mainMod SHIFT, 2, movetoworkspace, 2
+bind = $mainMod SHIFT, 3, movetoworkspace, 3
+bind = $mainMod SHIFT, 4, movetoworkspace, 4
+bind = $mainMod SHIFT, 5, movetoworkspace, 5
+bind = $mainMod SHIFT, 6, movetoworkspace, 6
+bind = $mainMod SHIFT, 7, movetoworkspace, 7
+bind = $mainMod SHIFT, 8, movetoworkspace, 8
+bind = $mainMod SHIFT, 9, movetoworkspace, 9
+bind = $mainMod SHIFT, 0, movetoworkspace, 10
+
+# Special workspaces
+bind = $mainMod, S, togglespecialworkspace, magic
+bind = $mainMod SHIFT, S, movetoworkspace, special:magic
+
+# Scroll through workspaces
+bind = $mainMod, mouse_down, workspace, e+1
+bind = $mainMod, mouse_up, workspace, e-1
+
+# Mouse bindings
+bindm = $mainMod, mouse:272, movewindow
+bindm = $mainMod, mouse:273, resizewindow
+
+# Media keys
+bind = , XF86AudioRaiseVolume, exec, wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+
+bind = , XF86AudioLowerVolume, exec, wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+bind = , XF86AudioMute, exec, wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+bind = , XF86AudioPlay, exec, playerctl play-pause
+bind = , XF86AudioPause, exec, playerctl play-pause
+bind = , XF86AudioNext, exec, playerctl next
+bind = , XF86AudioPrev, exec, playerctl previous
+
+# Brightness
+bind = , XF86MonBrightnessUp, exec, brightnessctl set 10%+
+bind = , XF86MonBrightnessDown, exec, brightnessctl set 10%-
+
+# Screenshot
+bind = $mainMod, Print, exec, grim -g "$(slurp)" - | wl-copy
+bind = , Print, exec, grim - | wl-copy
+
+# Autostart applications
+exec-once = waybar
+exec-once = hyprpaper
+exec-once = /usr/lib/polkit-kde-authentication-agent-1
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+
+EOF

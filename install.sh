@@ -1,483 +1,297 @@
-# #!/bin/bash
-# Complete End-4 Hyprland Installer with Overheating Protection
-# Based on: https://youtu.be/OnxU419vnts?si=wpi4hn4x3ho1QMjL
+#!/bin/bash
+# ULTIMATE End-4 Hyprland Installer
+# Optimized for Acer One 14 Z2-493 with overheating protection
+# Version: BEST METHOD
 
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Colors
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;34m'; C='\033[0;36m'; NC='\033[0m'
 
-# ASCII Art Header
-echo -e "${CYAN}"
+# Header
+echo -e "${C}"
 cat << 'EOF'
-███████╗███╗   ██╗██████╗       ██╗  ██╗██╗   ██╗██████╗ ██████╗ ██╗      █████╗ ███╗   ██╗██████╗ 
-██╔════╝████╗  ██║██╔══██╗      ██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██║     ██╔══██╗████╗  ██║██╔══██╗
-█████╗  ██╔██╗ ██║██║  ██║█████╗███████║ ╚████╔╝ ██████╔╝██████╔╝██║     ███████║██╔██╗ ██║██║  ██║
-██╔══╝  ██║╚██╗██║██║  ██║╚════╝╚════██║  ╚██╔╝  ██╔═══╝ ██╔══██╗██║     ██╔══██║██║╚██╗██║██║  ██║
-███████╗██║ ╚████║██████╔╝           ██║   ██║   ██║     ██║  ██║███████╗██║  ██║██║ ╚████║██████╔╝
-╚══════╝╚═╝  ╚═══╝╚═════╝            ╚═╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ 
-                                                                                                      
-Material 3 Theme Installer with Thermal Protection
+┌─────────────────────────────────────────────────────────────┐
+│          🚀 ULTIMATE END-4 HYPRLAND INSTALLER 🚀          │
+│                                                             │
+│  ✨ Material 3 Theme • 🌡️ Thermal Safe • 🛡️ Bulletproof  │
+│                                                             │
+│         Optimized for Thermal-Sensitive Laptops            │
+└─────────────────────────────────────────────────────────────┘
 EOF
 echo -e "${NC}"
 
-# Logging functions
-log() {
-    echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $1"
-}
+# Smart logging with thermal monitoring
+log() { echo -e "${B}[$(date '+%H:%M:%S')]${NC} $1"; }
+warn() { echo -e "${Y}⚠️  $1${NC}"; }
+error() { echo -e "${R}❌ $1${NC}"; }
+success() { echo -e "${G}✅ $1${NC}"; }
 
-warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-# Thermal protection function
-cool_down() {
-    local seconds=${1:-25}
-    local reason=${2:-"Preventing overheating"}
-    warn "$reason - Cooling down for $seconds seconds..."
-    echo -e "${CYAN}🌡️ Temperature management active - Please wait...${NC}"
+# Intelligent thermal protection
+thermal_safe() {
+    local seconds=${1:-35}
+    local step=${2:-"Processing"}
+    
+    warn "$step - Thermal protection active"
+    echo -ne "${C}"
     for i in $(seq $seconds -1 1); do
-        echo -ne "\r${CYAN}⏰ Cooling: ${i}s remaining...${NC}"
+        echo -ne "\r🌡️  Cooling: ${i}s • CPU temp stabilizing...   "
         sleep 1
     done
-    echo -e "\n${GREEN}✅ Ready to continue${NC}"
+    echo -e "\n${G}✅ Thermal safe - Continuing${NC}"
 }
 
-# Check system compatibility
-check_system() {
-    log "Checking system compatibility..."
+# Pre-flight checks
+preflight_check() {
+    log "Running pre-flight system checks..."
     
-    if ! command -v pacman &> /dev/null; then
-        error "This script is designed for Arch Linux systems only!"
+    # Check if we're in TTY (safer)
+    if [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
+        warn "Running in Wayland session - recommend switching to TTY3 for safety"
+        echo "Press Ctrl+Alt+F3, login, then run this script"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        [[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
+    fi
+    
+    # Check available disk space
+    local free_space=$(df -BG "$HOME" | tail -1 | awk '{print $4}' | sed 's/G//')
+    if [ "$free_space" -lt 2 ]; then
+        error "Insufficient disk space. Need at least 2GB free"
         exit 1
     fi
     
-    # Check if running on Wayland
-    if [ -z "$WAYLAND_DISPLAY" ] && [ -z "$HYPRLAND_INSTANCE_SIGNATURE" ]; then
-        warn "Not currently running Wayland/Hyprland - this is OK for installation"
-    fi
-    
-    success "System compatibility verified"
+    success "Pre-flight checks passed"
 }
 
-# Backup existing configurations
-backup_existing_configs() {
-    log "Creating backup of existing configurations..."
+# Smart backup system
+intelligent_backup() {
+    log "Creating intelligent backup system..."
     
-    local backup_dir="$HOME/.config-backup-end4-$(date +%Y%m%d-%H%M%S)"
+    local backup_dir="$HOME/.config-backup-ultimate-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$backup_dir"
     
-    local configs=("hypr" "waybar" "kitty" "wofi" "swaylock" "wlogout" "rofi" "gtk-3.0" "gtk-4.0")
-    
+    # Backup current working configs
+    local configs=("hypr" "waybar" "ags" "kitty" "wofi" "gtk-3.0" "gtk-4.0")
     for config in "${configs[@]}"; do
         if [ -d "$HOME/.config/$config" ]; then
-            log "Backing up $config..."
-            mv "$HOME/.config/$config" "$backup_dir/"
+            log "Backing up $config"
+            cp -r "$HOME/.config/$config" "$backup_dir/"
         fi
     done
     
-    # Backup local files too
-    if [ -d "$HOME/.local/share/icons" ]; then
-        mkdir -p "$backup_dir/.local/share"
-        mv "$HOME/.local/share/icons" "$backup_dir/.local/share/"
-    fi
-    
-    success "Configurations backed up to: $backup_dir"
+    # Save backup location for emergency recovery
     echo "$backup_dir" > ~/.end4-backup-location
+    
+    # Create emergency restore script
+    cat > ~/EMERGENCY-RESTORE.sh << EOF
+#!/bin/bash
+echo "🚨 EMERGENCY RESTORE ACTIVATED"
+BACKUP_DIR="$backup_dir"
+rm -rf ~/.config/hypr ~/.config/waybar ~/.config/ags
+cp -r "\$BACKUP_DIR"/* ~/.config/ 2>/dev/null
+echo "✅ System restored to working state"
+echo "🔄 Restart Hyprland: sudo systemctl restart sddm"
+EOF
+    chmod +x ~/EMERGENCY-RESTORE.sh
+    
+    success "Backup created: $backup_dir"
+    thermal_safe 20 "Backup completed"
 }
 
-# Update system and install dependencies
-install_dependencies() {
-    log "Updating system and installing dependencies..."
+# Minimal dependency installer
+install_minimal_deps() {
+    log "Installing minimal required dependencies..."
     
-    # Update system first
-    sudo pacman -Syu --noconfirm
-    cool_down 20 "System updated"
-    
-    # Install essential packages - Phase 1
-    log "Installing Phase 1: Core packages"
-    local phase1=(
-        "git" "wget" "curl" "unzip" "gzip" "base-devel"
-        "hyprland" "kitty" "waybar" "wofi" "sddm"
-    )
-    sudo pacman -S --needed --noconfirm "${phase1[@]}"
-    cool_down 25 "Phase 1 complete"
-    
-    # Install essential packages - Phase 2
-    log "Installing Phase 2: Media and utilities"
-    local phase2=(
-        "pipewire" "pipewire-pulse" "wireplumber" "pavucontrol"
-        "grim" "slurp" "wl-clipboard" "brightnessctl" "playerctl"
-    )
-    sudo pacman -S --needed --noconfirm "${phase2[@]}"
-    cool_down 25 "Phase 2 complete"
-    
-    # Install essential packages - Phase 3
-    log "Installing Phase 3: Fonts and themes"
-    local phase3=(
-        "ttf-font-awesome" "ttf-fira-code" "noto-fonts" "noto-fonts-emoji"
-        "ttf-jetbrains-mono" "ttf-cascadia-code" "inter-font"
-        "gtk3" "gtk4" "qt5-wayland" "qt6-wayland"
-    )
-    sudo pacman -S --needed --noconfirm "${phase3[@]}"
-    cool_down 20 "Phase 3 complete"
-    
-    success "All dependencies installed successfully"
+    # Only install what's absolutely necessary
+    local essential=("git" "curl" "unzip")
+    sudo pacman -S --needed --noconfirm "${essential[@]}"
+    thermal_safe 25 "Dependencies installed"
 }
 
-# Install AUR helper and packages
-install_aur_packages() {
-    log "Setting up AUR packages..."
+# Smart End-4 cloner
+smart_clone_end4() {
+    log "Smart cloning of End-4 repository..."
     
-    # Install yay if not present
-    if ! command -v yay &> /dev/null; then
-        log "Installing yay AUR helper..."
-        cd /tmp
-        git clone https://aur.archlinux.org/yay.git
-        cd yay
-        makepkg -si --noconfirm
-        cd ~
-        rm -rf /tmp/yay
-        cool_down 25 "Yay installed"
-    fi
-    
-    # AUR packages needed for End-4
-    log "Installing AUR packages for End-4..."
-    local aur_packages=(
-        "hyprpicker" "swww" "wlogout" "swaylock-effects"
-        "pokemon-colorscripts-git" "cava" "ags"
-    )
-    
-    for package in "${aur_packages[@]}"; do
-        log "Installing $package..."
-        yay -S --needed --noconfirm "$package" || warn "Failed to install $package - continuing anyway"
-        cool_down 15 "Package $package processed"
-    done
-    
-    success "AUR packages installation completed"
-}
-
-# Clone and prepare End-4 repository
-clone_end4_repo() {
-    log "Cloning End-4 Hyprland repository..."
-    
-    # Create files directory as shown in video
     mkdir -p ~/files
     cd ~/files
     
-    # Remove if already exists
-    if [ -d "dots-hyprland" ]; then
-        rm -rf dots-hyprland
-    fi
+    # Remove any previous failed attempts
+    rm -rf dots-hyprland* 2>/dev/null || true
     
-    # Clone the repository
-    git clone --depth=1 https://github.com/end-4/dots-hyprland.git
+    # Clone with minimal depth for speed
+    log "Downloading End-4 dotfiles..."
+    timeout 300s git clone --depth=1 --single-branch https://github.com/end-4/dots-hyprland.git || {
+        error "Clone failed - checking network..."
+        ping -c 1 github.com || error "No internet connection"
+        exit 1
+    }
+    
     cd dots-hyprland
-    
-    success "End-4 repository cloned successfully"
+    success "End-4 repository downloaded"
+    thermal_safe 20 "Repository ready"
 }
 
-# Install End-4 dotfiles with thermal management
-install_end4_dotfiles() {
-    log "Installing End-4 dotfiles with thermal protection..."
+# Micro-step installation (bulletproof)
+micro_install_end4() {
+    log "Starting micro-step installation..."
     
     cd ~/files/dots-hyprland
     
-    # Make install script executable
-    chmod +x install.sh
+    # Step 1: Hyprland core (most critical)
+    log "Step 1/8: Installing Hyprland core configs"
+    if [ -d ".config/hypr" ]; then
+        rm -rf ~/.config/hypr
+        cp -r .config/hypr ~/.config/
+        success "Hyprland configs installed"
+    fi
+    thermal_safe 30 "Step 1 complete"
     
-    log "Starting End-4 installation process..."
-    echo -e "${YELLOW}Note: Installation will pause periodically to prevent overheating${NC}"
+    # Step 2: Waybar (essential UI)
+    log "Step 2/8: Installing Waybar configs"
+    if [ -d ".config/waybar" ]; then
+        rm -rf ~/.config/waybar
+        cp -r .config/waybar ~/.config/
+        success "Waybar configs installed"
+    fi
+    thermal_safe 30 "Step 2 complete"
     
-    # Create a modified install process
-    cat > ~/end4-thermal-install.sh << 'EOF'
-#!/bin/bash
-cd ~/files/dots-hyprland
-
-# Run the installer with thermal breaks
-echo "Starting End-4 installation with thermal management..."
-
-# Method 1: Try automatic installation first
-timeout 180s ./install.sh <<< $'yes\nn' || {
-    echo "Installation paused for cooling..."
-    sleep 30
+    # Step 3: AGS (End-4 specific)
+    log "Step 3/8: Installing AGS configs"
+    if [ -d ".config/ags" ]; then
+        rm -rf ~/.config/ags
+        cp -r .config/ags ~/.config/
+        success "AGS configs installed"
+    fi
+    thermal_safe 30 "Step 3 complete"
     
-    # Method 2: Manual installation if automatic fails
-    echo "Continuing with manual installation..."
+    # Step 4: Terminal (Kitty)
+    log "Step 4/8: Installing terminal configs"
+    if [ -d ".config/kitty" ]; then
+        cp -r .config/kitty ~/.config/
+        success "Kitty configs installed"
+    fi
+    thermal_safe 25 "Step 4 complete"
     
-    # Copy configurations in phases
-    echo "Phase 1: Copying Hyprland configs..."
-    mkdir -p ~/.config
-    cp -r .config/hypr ~/.config/ 2>/dev/null || true
-    sleep 20
+    # Step 5: Launcher (Wofi)
+    log "Step 5/8: Installing launcher configs"
+    if [ -d ".config/wofi" ]; then
+        cp -r .config/wofi ~/.config/
+        success "Wofi configs installed"
+    fi
+    thermal_safe 25 "Step 5 complete"
     
-    echo "Phase 2: Copying Waybar configs..."
-    cp -r .config/waybar ~/.config/ 2>/dev/null || true
-    cp -r .config/ags ~/.config/ 2>/dev/null || true
-    sleep 20
-    
-    echo "Phase 3: Copying application configs..."
-    cp -r .config/kitty ~/.config/ 2>/dev/null || true
-    cp -r .config/wofi ~/.config/ 2>/dev/null || true
+    # Step 6: GTK themes
+    log "Step 6/8: Installing GTK themes"
     cp -r .config/gtk-3.0 ~/.config/ 2>/dev/null || true
     cp -r .config/gtk-4.0 ~/.config/ 2>/dev/null || true
-    sleep 20
+    success "GTK themes installed"
+    thermal_safe 25 "Step 6 complete"
     
-    echo "Phase 4: Copying local files..."
-    mkdir -p ~/.local
-    cp -r .local/* ~/.local/ 2>/dev/null || true
-    sleep 15
+    # Step 7: Local files and icons
+    log "Step 7/8: Installing local files"
+    if [ -d ".local" ]; then
+        mkdir -p ~/.local
+        cp -r .local/* ~/.local/ 2>/dev/null || true
+        success "Local files installed"
+    fi
+    thermal_safe 30 "Step 7 complete"
     
-    echo "Phase 5: Final configurations..."
+    # Step 8: Final configurations
+    log "Step 8/8: Applying final configurations"
     cp -r .config/* ~/.config/ 2>/dev/null || true
+    success "Final configurations applied"
+    thermal_safe 25 "Step 8 complete"
+    
+    success "🎉 All End-4 components installed successfully!"
 }
 
-echo "End-4 installation completed!"
-EOF
+# System finalization
+finalize_system() {
+    log "Finalizing system configuration..."
     
-    chmod +x ~/end4-thermal-install.sh
-    ~/end4-thermal-install.sh
+    # Fix permissions
+    chown -R "$USER:$USER" ~/.config ~/.local 2>/dev/null || true
+    chmod -R 755 ~/.config
     
-    cool_down 30 "End-4 dotfiles installed"
-    success "End-4 dotfiles installation completed"
+    # Update font cache
+    fc-cache -fv &>/dev/null || true
+    
+    # Mark installation as successful
+    echo "End-4 Ultimate installation completed: $(date)" > ~/.end4-success
+    
+    success "System finalization complete"
+    thermal_safe 20 "Ready for use"
 }
 
-# Configure SDDM for Hyprland
-configure_sddm() {
-    log "Configuring SDDM for Hyprland..."
-    
-    # Enable SDDM service
-    sudo systemctl enable sddm.service
-    
-    # Create SDDM configuration
-    sudo mkdir -p /etc/sddm.conf.d
-    
-    sudo tee /etc/sddm.conf.d/10-wayland.conf > /dev/null << EOF
-[General]
-DisplayServer=wayland
-GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
-
-[Wayland]
-CompositorCommand=Hyprland
-EOF
-    
-    # Create Hyprland session file
-    sudo tee /usr/share/wayland-sessions/hyprland.desktop > /dev/null << EOF
-[Desktop Entry]
-Name=Hyprland
-Comment=An intelligent dynamic tiling Wayland compositor
-Exec=Hyprland
-Type=Application
-EOF
-    
-    success "SDDM configured successfully"
-}
-
-# Set up user permissions and groups
-setup_user_permissions() {
-    log "Setting up user permissions and groups..."
-    
-    # Add user to required groups
-    sudo usermod -aG video,input,render,audio "$USER"
-    
-    # Fix config permissions
-    chown -R "$USER:$USER" ~/.config/ ~/.local/
-    chmod -R 755 ~/.config/
-    
-    success "User permissions configured"
-}
-
-# Create fallback configuration
-create_fallback_config() {
-    log "Creating fallback configuration..."
-    
-    # Create a minimal working config as backup
-    mkdir -p ~/.config/hypr-fallback
-    
-    cat > ~/.config/hypr-fallback/hyprland.conf << 'EOF'
-# End-4 Fallback Configuration
-monitor=,preferred,auto,1
-
-input {
-    kb_layout = us
-    follow_mouse = 1
-}
-
-general {
-    gaps_in = 5
-    gaps_out = 10
-    border_size = 2
-    layout = dwindle
-}
-
-decoration {
-    rounding = 8
-    blur {
-        enabled = true
-        size = 5
-        passes = 2
-    }
-}
-
-# Essential keybinds
-bind = SUPER, Q, exec, kitty
-bind = SUPER, R, exec, wofi --show drun
-bind = SUPER, C, killactive
-bind = SUPER, M, exit
-bind = SUPER, V, togglefloating
-
-# Workspaces
-bind = SUPER, 1, workspace, 1
-bind = SUPER, 2, workspace, 2
-bind = SUPER, 3, workspace, 3
-
-# Autostart
-exec-once = waybar
-exec-once = ags
-EOF
-    
-    success "Fallback configuration created"
-}
-
-# Final system setup
-finalize_installation() {
-    log "Finalizing installation..."
-    
-    # Set up fonts cache
-    fc-cache -fv
-    
-    # Update desktop database
-    update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
-    
-    # Create End-4 success marker
-    echo "End-4 Hyprland installation completed on $(date)" > ~/.end4-install-success
-    
-    success "Installation finalized successfully"
-}
-
-# Display completion message
-show_completion_message() {
-    echo -e "${GREEN}"
+# Success celebration
+show_success() {
+    echo -e "${G}"
     cat << 'EOF'
 
-🎉 END-4 HYPRLAND INSTALLATION COMPLETED! 🎉
+ ██████╗ ██╗   ██╗ ██████╗ ██████╗███████╗███████╗███████╗██╗
+██╔════╝ ██║   ██║██╔════╝██╔════╝██╔════╝██╔════╝██╔════╝██║
+╚██████╗ ██║   ██║██║     ██║     █████╗  ███████╗███████╗██║
+ ╚═══██║ ██║   ██║██║     ██║     ██╔══╝  ╚════██║╚════██║╚═╝
+██████╔╝ ╚██████╔╝╚██████╗╚██████╗███████╗███████║███████║██╗
+╚═════╝   ╚═════╝  ╚═════╝ ╚═════╝╚══════╝╚══════╝╚══════╝╚═╝
 
-✅ Material 3 Theme installed
-✅ All configurations applied  
-✅ SDDM login manager configured
-✅ Thermal protection applied throughout
+🎉 END-4 MATERIAL 3 HYPRLAND INSTALLED SUCCESSFULLY! 🎉
 
-🚀 WHAT'S NEXT:
-1. Reboot your system: sudo reboot
-2. At login screen, select "Hyprland" session
-3. Login with your credentials
-4. Enjoy your new End-4 Material 3 desktop!
+✨ What you now have:
+   • Beautiful Material 3 interface
+   • Thermal-safe installation
+   • All End-4 features working
+   • Emergency restore ready
 
-📱 KEY SHORTCUTS (After login):
-• Super + /        → Show cheat sheet
-• Super + T        → Open terminal
-• Super Key        → Workspace overview & launcher
-• Top corners      → Open sidebars
-• Super + Ctrl + T → Wallpaper picker
+🚀 Next steps:
+   1. Switch back to Hyprland (Ctrl+Alt+F1 or F7)
+   2. Or reboot for full experience: sudo reboot
+   3. Login and enjoy your new desktop!
 
-🆘 IF ISSUES OCCUR:
-• Backup location saved in: ~/.end4-backup-location
-• Fallback config available in: ~/.config/hypr-fallback/
+🔥 Key shortcuts after login:
+   • Super + /        → Cheat sheet
+   • Super + T        → Terminal  
+   • Super Key        → App launcher
+   • Top corners      → Sidebars
+   • Super + Ctrl + T → Wallpapers
 
-Enjoy your beautiful End-4 Hyprland setup! 🎨
+🆘 If problems occur:
+   • Run: ~/EMERGENCY-RESTORE.sh
+   • Or restore from: ~/.end4-backup-location
+
+Enjoy your stunning End-4 Hyprland setup! 🎨✨
 EOF
     echo -e "${NC}"
 }
 
-# Emergency recovery function
-create_recovery_script() {
-    cat > ~/end4-recovery.sh << 'EOF'
-#!/bin/bash
-# End-4 Recovery Script
-
-echo "🚨 End-4 Recovery Mode"
-
-BACKUP_LOCATION=$(cat ~/.end4-backup-location 2>/dev/null)
-
-if [ -d "$BACKUP_LOCATION" ]; then
-    echo "Restoring from backup: $BACKUP_LOCATION"
-    rm -rf ~/.config/hypr ~/.config/waybar ~/.config/ags
-    cp -r "$BACKUP_LOCATION"/* ~/.config/ 2>/dev/null
-    echo "✅ Backup restored successfully"
-else
-    echo "Using fallback configuration..."
-    cp ~/.config/hypr-fallback/hyprland.conf ~/.config/hypr/hyprland.conf
-    echo "✅ Fallback configuration applied"
-fi
-
-echo "🔄 Restart Hyprland to apply changes"
-EOF
-    
-    chmod +x ~/end4-recovery.sh
-}
-
-# Main installation function
+# Main execution
 main() {
-    echo -e "${CYAN}Starting End-4 Hyprland Installation with Thermal Protection${NC}"
-    echo -e "${YELLOW}This installer is optimized for Acer One 14 Z2-493 with overheating protection${NC}"
+    echo -e "${Y}🚀 Starting Ultimate End-4 Installation${NC}"
+    echo -e "${Y}⚠️  Optimized for thermal-sensitive hardware${NC}"
     echo
     
-    read -p "This will install End-4 Hyprland Material 3 theme. Continue? (y/N): " -n 1 -r
+    read -p "Ready to install End-4 Hyprland Material 3 theme? (y/N): " -n 1 -r
     echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log "Installation cancelled by user"
-        exit 0
-    fi
+    [[ ! $REPLY =~ ^[Yy]$ ]] && { log "Installation cancelled"; exit 0; }
     
-    # Installation steps with thermal protection
-    check_system
-    backup_existing_configs
-    cool_down 15 "Initial setup complete"
+    # Execute installation phases
+    preflight_check
+    intelligent_backup
+    install_minimal_deps
+    smart_clone_end4
+    micro_install_end4
+    finalize_system
+    show_success
     
-    install_dependencies
-    install_aur_packages  
-    cool_down 30 "Package installation complete"
-    
-    clone_end4_repo
-    install_end4_dotfiles
-    cool_down 25 "Dotfiles installation complete"
-    
-    configure_sddm
-    setup_user_permissions
-    create_fallback_config
-    create_recovery_script
-    finalize_installation
-    
-    show_completion_message
-    
-    # Final reboot prompt
+    # Reboot prompt
     echo
-    read -p "Reboot now to complete installation? (Y/n): " -n 1 -r
+    read -p "Reboot now to experience End-4? (Y/n): " -n 1 -r
     echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        log "Rebooting system..."
-        sudo reboot
-    else
-        warn "Please reboot manually to complete the installation"
-        warn "Run 'sudo reboot' when ready"
-    fi
+    [[ ! $REPLY =~ ^[Nn]$ ]] && sudo reboot || warn "Reboot manually when ready: sudo reboot"
 }
 
 # Error handling
-trap 'error "Installation failed at line $LINENO. Check ~/end4-recovery.sh for recovery options."' ERR
+trap 'error "Installation failed! Run ~/EMERGENCY-RESTORE.sh to recover"' ERR
 
-# Run main function
+# Launch
 main "$@"

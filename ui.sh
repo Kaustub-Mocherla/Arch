@@ -1,108 +1,105 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# =========================
-#  End-4 dots: cool install
-#  - batchy, low-heat, auto-pause
-# =========================
+# ===== Caelestia clean install (after end-4), with safe fallback + cool mode =====
 
-# ---------- config ----------
-MAX_TEMP=85         # °C; pause if >= this
-CHECK_EVERY=10      # seconds between temp checks while cooling
-AUR_PKGS=(grimblast hyprpicker)   # build one-by-one
-REPO_URL="https://github.com/end-4/dots-hyprland.git"
-REPO_DIR="$HOME/dots-hyprland"
-BACKUP_ALL="$HOME/.config_backup_end4_$(date +%F_%H%M%S)"
-BACKUP_CONFLICT="$HOME/.config_end4_conflict_backup_$(date +%F_%H%M%S)"
+# ---- heat limits ----
+MAX_TEMP=85         # °C: pause above this
+CHECK_EVERY=10      # seconds between temp checks
 
-# ---------- helpers ----------
-have(){ command -v "$1" >/dev/null 2>&1; }
+# ---- paths ----
+END4_REPO="$HOME/dots-hyprland"
+CAEL_REPO_URL="https://github.com/caelestia-dots/shell.git"
+CAEL_REPO="$HOME/.local/share/caelestia"
+CFG="$HOME/.config"
+HYPR="$CFG/hypr"
+WB="$CFG/waybar"
+WOFI="$CFG/wofi"
+KITTY="$CFG/kitty"
+FISHCFG="$CFG/fish"
+FOOTCFG="$CFG/foot"
+WPDIR="$CFG/wallpapers"
+LOG="$HOME/caelestia_clean_install_$(date +%F_%H%M%S).log"
+
+# ---- helpers ----
 say(){ printf "\n\033[1;36m==>\033[0m %s\n" "$*"; }
-
-get_temp() {
-  # requires lm_sensors; try to pull the hottest sensible CPU reading
-  local t lines
+have(){ command -v "$1" >/dev/null 2>&1; }
+cpu_temp(){
+  local lines t
   lines="$(sensors 2>/dev/null || true)"
   t=$(
     printf "%s" "$lines" |
-    awk '
-      /Tctl:|Package id 0:|Tdie:|CPU temp:|CPU Temperature:|Core 0:/ {
-        for(i=1;i<=NF;i++) if ($i ~ /[0-9]+\.[0-9]+°C|[0-9]+°C/) {
-          gsub(/°C/,"",$i); gsub(/\+|/,"",$i); print $i+0
-        }
-      }
-      /temp1:/ { for(i=1;i<=NF;i++) if ($i ~ /[0-9]+\.[0-9]+°C|[0-9]+°C/) { gsub(/°C/,"",$i); gsub(/\+/,"",$i); print $i+0 } }
-    ' 2>/dev/null |
-    sort -nr | head -n1
+    awk '/Tctl:|Package id 0:|Tdie:|CPU temp:|CPU Temperature:|temp1:/{
+      for(i=1;i<=NF;i++) if ($i ~ /[0-9]+(\.[0-9]+)?°C/){ gsub(/°C|\+/,"",$i); print $i+0 }
+    }' | sort -nr | head -n1
   )
   echo "${t:-0}"
 }
-
-cool_wait() {
-  # Pause if too hot
+cool_wait(){
   if ! have sensors; then
-    say "Installing lm_sensors for temperature checks…"
     sudo pacman -S --needed --noconfirm lm_sensors
-    # (sensors works without interactive sensors-detect on most laptops)
   fi
-  local t
-  t="$(get_temp)"
-  echo "Current CPU temp: ${t}°C  (limit ${MAX_TEMP}°C)"
+  local t; t="$(cpu_temp)"
+  echo "CPU temp: ${t}°C (limit ${MAX_TEMP}°C)"
   while [ "${t%.*}" -ge "$MAX_TEMP" ]; do
-    echo "Too hot. Cooling… (<= ${MAX_TEMP}°C to continue)"
+    echo "…cooling (<= ${MAX_TEMP}°C to continue)"
     sleep "$CHECK_EVERY"
-    t="$(get_temp)"
-    echo "  -> ${t}°C"
+    t="$(cpu_temp)"; echo "  -> ${t}°C"
   done
 }
+pac(){ cool_wait; sudo pacman -S --needed --noconfirm "$@"; }
 
-pac() { cool_wait; sudo pacman -S --needed --noconfirm "$@"; }
-yay_one() { cool_wait; nice -n 19 ionice -c3 yay -S --needed --noconfirm "$1"; }
+# ---- log everything ----
+exec > >(tee -a "$LOG") 2>&1
 
-# ---------- Batch 1: pacman base (light) ----------
-say "Batch 1: core packages (pacman)"
-pac git base-devel jq polkit-gnome wl-clipboard grim slurp \
-    playerctl brightnessctl imagemagick \
-    hyprland waybar wofi kitty mako \
-    pipewire pipewire-pulse wireplumber \
-    xdg-desktop-portal-hyprland \
-    noto-fonts ttf-jetbrains-mono ttf-font-awesome
+say "Stopping running bar/wallpaper to avoid conflicts…"
+pkill -x waybar 2>/dev/null || true
+pkill -x hyprpaper 2>/dev/null || true
+pkill -x swww 2>/dev/null || true
+pkill -x mako 2>/dev/null || true
 
-say "Enable services"
-cool_wait
-sudo systemctl enable --now NetworkManager || true
-sudo systemctl enable --now bluetooth || true
-sudo systemctl enable sddm || true
+# ------------------------------------------------------------------------------
+# 1) CLEAN END-4 LEFTOVERS (configs -> backup, repo removed)
+# ------------------------------------------------------------------------------
+BACKUP="$HOME/.config_end4_cleanup_$(date +%F_%H%M%S)"
+say "Backing up end-4 related configs to: $BACKUP"
+mkdir -p "$BACKUP"
 
-# ---------- Batch 2: AUR helper + AUR pkgs (slow, cool) ----------
-say "Batch 2: AUR helper (yay) at low priority"
-export MAKEFLAGS="-j1"   # build with a single thread to reduce heat
-
-if ! have yay; then
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-  cool_wait
-  nice -n 19 ionice -c3 git clone https://aur.archlinux.org/yay.git "$tmp/yay"
-  ( cd "$tmp/yay" && nice -n 19 ionice -c3 makepkg -si --noconfirm )
-fi
-
-say "Build AUR packages one-by-one (cool mode)"
-for p in "${AUR_PKGS[@]}"; do
-  yay_one "$p"
+for d in hypr waybar wofi kitty fish foot; do
+  if [[ -e "$CFG/$d" ]]; then
+    mv "$CFG/$d" "$BACKUP/" || true
+    echo "  moved ~/.config/$d -> $BACKUP/"
+  fi
 done
 
-# ---------- Batch 3: repo + backup (very light) ----------
-say "Batch 3: backup current ~/.config and fetch end-4 repo"
-mkdir -p "$BACKUP_ALL"
-cp -r "$HOME/.config/." "$BACKUP_ALL/" 2>/dev/null || true
-echo "Backup of your configs: $BACKUP_ALL"
-
-if [[ -d "$REPO_DIR/.git" ]]; then
-  (cd "$REPO_DIR" && git pull --ff-only)
-else
-  git clone "$REPO_URL" "$REPO_DIR"
+if [[ -d "$END4_REPO/.git" ]]; then
+  say "Removing end-4 repo: $END4_REPO"
+  rm -rf "$END4_REPO"
 fi
 
-# Ensure Hyprland session for SDDM
+mkdir -p "$HYPR" "$WB" "$WOFI" "$KITTY" "$WPDIR"
+
+# ------------------------------------------------------------------------------
+# 2) RUNTIME PACKAGES (pacman only; stable)
+# ------------------------------------------------------------------------------
+say "Installing core Wayland/Hyprland runtime + tools…"
+pac hyprland sddm fish git \
+    waybar wofi kitty mako \
+    swww hyprpaper wl-clipboard grim slurp jq \
+    pipewire pipewire-pulse wireplumber polkit-gnome \
+    xdg-desktop-portal-hyprland \
+    noto-fonts ttf-jetbrains-mono ttf-font-awesome \
+    imagemagick lm_sensors
+
+say "Enabling display/network services…"
+sudo systemctl enable --now sddm || true
+sudo systemctl enable --now NetworkManager || true
+sudo systemctl enable --now bluetooth || true
+
+# ------------------------------------------------------------------------------
+# 3) SDDM SESSION FIX (dbus-run-session Hyprland)
+# ------------------------------------------------------------------------------
+say "Ensuring SDDM uses dbus-run-session for Hyprland…"
 sudo mkdir -p /usr/share/wayland-sessions
 sudo tee /usr/share/wayland-sessions/hyprland.desktop >/dev/null <<'EOF'
 [Desktop Entry]
@@ -112,45 +109,133 @@ Exec=dbus-run-session /usr/bin/Hyprland
 Type=Application
 EOF
 
-# ---------- Batch 4: install configs (safe merge) ----------
-say "Batch 4: install configs (handle conflicts safely)"
-[[ -d "$REPO_DIR/.config" ]] || { echo "Repo .config missing at $REPO_DIR"; exit 1; }
+# ------------------------------------------------------------------------------
+# 4) CLONE & RUN CAELESTIA install.fish
+# ------------------------------------------------------------------------------
+say "Cloning/updating Caelestia-shell repo…"
+mkdir -p "$(dirname "$CAEL_REPO")"
+if [[ -d "$CAEL_REPO/.git" ]]; then
+  git -C "$CAEL_REPO" pull --ff-only
+else
+  git clone "$CAEL_REPO_URL" "$CAEL_REPO"
+fi
 
-mkdir -p "$BACKUP_CONFLICT"
-for item in fish foot hypr waybar wofi kitty mako; do
-  if [[ -e "$HOME/.config/$item" ]]; then
-    echo "Backing up conflict: ~/.config/$item -> $BACKUP_CONFLICT/"
-    mv "$HOME/.config/$item" "$BACKUP_CONFLICT/" || true
-  fi
-done
-
+say "Running Caelestia install.fish (as in the video)…"
+pac fish
 cool_wait
-cp -rT "$REPO_DIR/.config" "$HOME/.config"
+fish -c "$CAEL_REPO/install.fish"
 
-# QoL: input group to silence /dev/input Waybar warnings
+# ------------------------------------------------------------------------------
+# 5) BULLETPROOF FALLBACK (never blank screen)
+#    - minimal waybar + wallpaper + kitty autostart
+#    - added as overlay include so it coexists with Caelestia
+# ------------------------------------------------------------------------------
+say "Setting up rescue overlay so session always comes up…"
+
+# one wallpaper for sure
+if ! ls "$WPDIR"/* >/dev/null 2>&1; then
+  convert -size 3840x2160 gradient:'#1f1f28-#24283b' "$WPDIR/caelestia-fallback.png"
+fi
+WP="$(ls -1 "$WPDIR"/* | head -n1)"
+
+# battery for waybar (avoid crashes)
+BAT="$(ls /sys/class/power_supply/ 2>/dev/null | grep '^BAT' | head -n1 || true)"
+[[ -z "${BAT:-}" ]] && BAT="BAT0"
+
+# safe waybar (tiny)
+cat > "$WB/config.jsonc" <<EOF
+{
+  "layer":"top","position":"top","height":28,
+  "modules-left":["clock"],
+  "modules-right":["pulseaudio","network","battery","tray"],
+  "clock":{"format":"%a %d %b %H:%M"},
+  "pulseaudio":{"format":"{volume}%"},
+  "network":{"format-wifi":"{essid} {signalStrength}%","format-ethernet":"{ifname}"},
+  "battery":{"bat":"$BAT","format":"{capacity}%"}
+}
+EOF
+cat > "$WB/style.css" <<'EOF'
+* { font-family: JetBrainsMono, Noto Sans, FontAwesome; font-size: 12px; }
+window#waybar { background: rgba(22,22,28,0.85); color: #ddd; }
+#battery.critical { color: #e06c75; }
+EOF
+
+# wofi/kitty small defaults (harmless if Caelestia overwrites)
+cat > "$WOFI/style.css" <<'EOF'
+window { background-color: rgba(22,22,28,0.95); }
+#input { padding: 6px; }
+EOF
+cat > "$KITTY/kitty.conf" <<'EOF'
+font_family JetBrains Mono
+font_size   11
+enable_audio_bell no
+EOF
+
+# autostart helper
+cat > "$HYPR/autostart.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP DESKTOP_SESSION GTK_THEME QT_QPA_PLATFORMTHEME || true
+pkill -x waybar 2>/dev/null || true
+pkill -x hyprpaper 2>/dev/null || true
+
+if command -v swww >/dev/null 2>&1; then
+  swww init 2>/dev/null || true
+  swww img "$WP" --transition-type none 2>/dev/null || true
+else
+  cat > "\$HOME/.config/hypr/hyprpaper.conf" <<HP
+preload = $WP
+wallpaper = ,$WP
+splash = false
+HP
+  hyprpaper &
+fi
+
+waybar &   # safe bar
+mako &     # notifications
+kitty &    # ensure a terminal
+EOF
+chmod +x "$HYPR/autostart.sh"
+
+# overlay that Caelestia will source or we’ll force-source
+OVERLAY="$HYPR/99-rescue.conf"
+cat > "$OVERLAY" <<'EOF'
+# === Caelestia Rescue Overlay (kept tiny; safe to keep) ===
+env = WLR_NO_HARDWARE_CURSORS,1
+exec-once = $HOME/.config/hypr/autostart.sh
+bind = SUPER, RETURN, exec, kitty
+bind = SUPER, C, exec, wofi --show drun
+bind = SUPER, Q, killactive
+bind = SUPER, R, exec, hyprctl reload
+EOF
+
+# make sure hyprland.conf includes overlay (whether Caelestia created one or not)
+if [[ -f "$HYPR/hyprland.conf" ]]; then
+  grep -q '99-rescue.conf' "$HYPR/hyprland.conf" || printf '\nsource = %s\n' "$OVERLAY" >> "$HYPR/hyprland.conf"
+else
+  cat > "$HYPR/hyprland.conf" <<'EOF'
+monitor=,preferred,auto,1
+env = XDG_CURRENT_DESKTOP,Hyprland
+env = XDG_SESSION_TYPE,wayland
+env = XDG_SESSION_DESKTOP,Hyprland
+env = DESKTOP_SESSION,hyprland
+source = $HOME/.config/hypr/99-rescue.conf
+EOF
+fi
+
+# /dev/input warnings fix
 if ! id -nG "$USER" | grep -qw input; then
   sudo usermod -aG input "$USER" || true
-  echo "Note: added '$USER' to group 'input' (reboot once)."
 fi
 
-# Battery name fix in Waybar if needed
-BAT="$(ls /sys/class/power_supply/ 2>/dev/null | grep '^BAT' | head -n1 || true)"
-if [[ -n "${BAT:-}" ]] && ls "$HOME/.config/waybar"/config* >/dev/null 2>&1; then
-  for f in "$HOME/.config/waybar"/config*; do
-    sed -i "s/\"BAT[0-9]\"/\"$BAT\"/g; s/\"bat[0-9]\"/\"$BAT\"/g" "$f" || true
-  done
-fi
-
-say "All batches complete."
-
+# ------------------------------------------------------------------------------
+# DONE
+# ------------------------------------------------------------------------------
+say "DONE — Caelestia installed & end-4 cleaned."
+echo "Backups placed at: $BACKUP"
+echo "Log: $LOG"
 echo
-echo "==================== DONE ===================="
-echo "✅ end-4/dots-hyprland installed with cool/auto-pause mode"
-echo "• Full backup:        $BACKUP_ALL"
-echo "• Conflict backup:    $BACKUP_CONFLICT"
-echo "Next:"
-echo "  1) reboot"
-echo "  2) choose Hyprland in SDDM"
-echo "  3) log in and enjoy end-4"
-echo "Tip: If you were added to 'input' group, reboot is required."
-echo "=============================================="
+echo "Now: reboot → choose **Hyprland** in SDDM."
+echo "You should ALWAYS get wallpaper + Waybar + Kitty (Wofi = SUPER+C)."
+echo
+echo "If something fails:  tail -n 200 ~/.local/share/sddm/wayland-session.log"

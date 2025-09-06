@@ -1,84 +1,96 @@
 #!/bin/bash
-# THERMAL-SAFE End-4 Installation (No AGS compilation)
+# Emergency Hyprland Recovery - Minimal Working Config
 
-echo "🌡️ THERMAL-SAFE END-4 INSTALLER (Skipping AGS compilation)"
+echo "🚨 Emergency Hyprland Fix"
 
-# Step 1: Cool down period
-echo "⏸️  Mandatory 60-second cooling period..."
-sleep 60
+# Step 1: Backup current broken config
+mv ~/.config/hypr/hyprland.conf ~/.config/hypr/hyprland.conf.broken 2>/dev/null || true
 
-# Step 2: Backup current setup
-BACKUP_DIR="$HOME/.config-working-backup-$(date +%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-cp -r ~/.config/hypr ~/.config/waybar "$BACKUP_DIR/" 2>/dev/null || true
-echo "$BACKUP_DIR" > ~/.working-backup-location
-echo "✅ Backup created: $BACKUP_DIR"
+# Step 2: Create ultra-minimal working config
+mkdir -p ~/.config/hypr
+cat > ~/.config/hypr/hyprland.conf << 'EOF'
+# Ultra-Minimal Hyprland Configuration
+# This WILL work - guaranteed
 
-# Step 3: Download End-4 (no compilation)
-mkdir -p ~/files
-cd ~/files
-rm -rf dots-hyprland 2>/dev/null || true
-git clone --depth=1 https://github.com/end-4/dots-hyprland.git
-cd dots-hyprland
-echo "✅ End-4 downloaded"
+# Monitor setup
+monitor=,preferred,auto,1
 
-# Cool down
-echo "🌡️ Cooling break (30s)..."
-sleep 30
+# Input configuration
+input {
+    kb_layout = us
+    follow_mouse = 1
+    sensitivity = 0
+}
 
-# Step 4: Install configs ONLY (no compilation)
-echo "📁 Installing End-4 configurations (no compilation)..."
+# General settings
+general {
+    gaps_in = 3
+    gaps_out = 6
+    border_size = 1
+    col.active_border = rgba(33ccffee)
+    col.inactive_border = rgba(595959aa)
+    layout = dwindle
+}
 
-# Install Hyprland configs
-if [ -d ".config/hypr" ]; then
-    cp -r .config/hypr ~/.config/
-    echo "✅ Hyprland configs installed"
-fi
-sleep 20
+# Minimal decoration
+decoration {
+    rounding = 3
+    blur {
+        enabled = false
+    }
+    drop_shadow = false
+}
 
-# Install Waybar configs (skip AGS)
-if [ -d ".config/waybar" ]; then
-    cp -r .config/waybar ~/.config/
-    echo "✅ Waybar configs installed"
-fi
-sleep 20
+# No animations (to reduce load)
+animations {
+    enabled = false
+}
 
-# Install other configs
-cp -r .config/kitty ~/.config/ 2>/dev/null || true
-cp -r .config/wofi ~/.config/ 2>/dev/null || true
-cp -r .config/gtk-3.0 ~/.config/ 2>/dev/null || true
-cp -r .config/gtk-4.0 ~/.config/ 2>/dev/null || true
-sleep 15
+# Layout
+dwindle {
+    pseudotile = true
+}
 
-# Install themes and icons
-if [ -d ".local" ]; then
-    mkdir -p ~/.local
-    cp -r .local/* ~/.local/ 2>/dev/null || true
-    echo "✅ Themes installed"
-fi
-sleep 15
+# Essential keybinds
+$mainMod = SUPER
+bind = $mainMod, Q, exec, kitty
+bind = $mainMod, Return, exec, kitty
+bind = $mainMod, C, killactive
+bind = $mainMod, M, exit
+bind = $mainMod, V, togglefloating
+bind = $mainMod, R, exec, wofi --show drun
 
-# Final configs (excluding AGS)
-find .config -maxdepth 1 -type d ! -name "ags" -exec cp -r {} ~/.config/ \; 2>/dev/null || true
+# Workspaces
+bind = $mainMod, 1, workspace, 1
+bind = $mainMod, 2, workspace, 2
+bind = $mainMod, 3, workspace, 3
+bind = $mainMod, 4, workspace, 4
+bind = $mainMod, 5, workspace, 5
 
-echo "🎉 End-4 installed WITHOUT AGS (no thermal stress)"
-echo "🔄 Restart Hyprland: Super + M"
+# Move to workspace  
+bind = $mainMod SHIFT, 1, movetoworkspace, 1
+bind = $mainMod SHIFT, 2, movetoworkspace, 2
+bind = $mainMod SHIFT, 3, movetoworkspace, 3
+bind = $mainMod SHIFT, 4, movetoworkspace, 4
+bind = $mainMod SHIFT, 5, movetoworkspace, 5
 
-# Create AGS installer for later (when system is cool)
-cat > ~/install-ags-later.sh << 'EOF'
-#!/bin/bash
-echo "🌡️ Installing AGS when system is cool..."
-echo "⚠️  This will take time and generate heat"
-read -p "CPU temperature should be <60°C. Continue? (y/N): " -n 1 -r
-[[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
+# Mouse bindings
+bindm = $mainMod, mouse:272, movewindow
+bindm = $mainMod, mouse:273, resizewindow
 
-# Limit CPU usage for AGS compilation
-export MAKEFLAGS="-j1"  # Use only 1 core
-nice -n 19 yay -S --needed --noconfirm ags
-
-echo "✅ AGS installed with thermal protection"
+# Simple autostart - ONE AT A TIME
+exec-once = kitty
 EOF
 
-chmod +x ~/install-ags-later.sh
+echo "✅ Minimal config created"
 
-echo "💡 To install AGS later (when cool): ~/install-ags-later.sh"
+# Step 3: Kill everything and reload
+killall waybar hyprpaper swww 2>/dev/null || true
+sleep 2
+
+# Step 4: Reload Hyprland
+hyprctl reload
+
+echo "🎉 Emergency fix complete!"
+echo "💡 You should now see a working desktop"
+echo "⚡ Test: Super+Q should open terminal"

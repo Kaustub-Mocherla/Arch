@@ -1,233 +1,230 @@
 #!/usr/bin/env bash
+# install_caelestia_cool.sh
+# One-shot, heat-safe installer/repairer for Caelestia-Shell on Arch
+# - runs in batches with pauses
+# - auto-handles swww/swww-git conflicts
+# - (re)installs yay if missing
+# - backs up your ~/.config
+# - runs Caelestia install.fish with a cooldown wrapper
+# - finishes CLI + Hyprland/session bits
+
 set -euo pipefail
 
-# ===== Caelestia-shell full installer (with cleanup + heat-safe + no-blank fallback) =====
-# Optional: MAX_TEMP=80 CHECK_EVERY=15 bash install_caelestia_allinone.sh
-MAX_TEMP="${MAX_TEMP:-85}"           # °C – pause above this
-CHECK_EVERY="${CHECK_EVERY:-10}"     # seconds between temp checks
+# -------- settings you can tweak --------
+MAX_TEMP="${MAX_TEMP:-82}"        # °C ceiling before pausing builds
+CHECK_EVERY="${CHECK_EVERY:-15}"  # seconds between temp checks while building
+PAUSE_SECS="${PAUSE_SECS:-3}"     # short automatic pause between batches
+# ---------------------------------------
 
-LOG="$HOME/caelestia_full_$(date +%F_%H%M%S).log"
-exec > >(tee -a "$LOG") 2>&1
+say() { printf "\n\033[1;36m==> %s\033[0m\n" "$*"; }
+warn() { printf "\n\033[1;33m[warn]\033[0m %s\n" "$*"; }
+die() { printf "\n\033[1;31m[err]\033[0m %s\n" "$*"; exit 1; }
 
-say(){ printf "\n\033[1;36m==>\033[0m %s\n" "$*"; }
-have(){ command -v "$1" >/dev/null 2>&1; }
+# Make sure we are not root (we'll use sudo)
+if [[ $EUID -eq 0 ]]; then
+  die "Run as your normal user (not root)."
+fi
 
-cpu_temp() {
-  local t
-  t="$(sensors 2>/dev/null | awk '/Tctl:|Package id 0:|Tdie:|CPU temp:|CPU Temperature:|temp1:/{
-    for(i=1;i<=NF;i++) if($i~/[0-9]+(\.[0-9]+)?°C/){gsub(/[+°C]/,"",$i); print $i+0}
-  }' | sort -nr | head -n1)"
-  echo "${t:-0}"
+# quick helper: read max temp from /sys (fallback to 0 if sensors missing)
+read_max_temp() {
+  local t max=0
+  for z in /sys/class/thermal/thermal_zone*/temp; do
+    [[ -r "$z" ]] || continue
+    t=$(<"$z")
+    (( t > max )) && max="$t"
+  done
+  # convert millidegC -> °C
+  echo $(( max/1000 ))
 }
-cool_wait() {
-  if ! have sensors; then sudo pacman -S --needed --noconfirm lm_sensors; fi
-  local t; t="$(cpu_temp)"
-  echo "CPU temp: ${t}°C (limit ${MAX_TEMP}°C)"
-  while [ "${t%.*}" -ge "$MAX_TEMP" ]; do
-    echo "… cooling (sleep ${CHECK_EVERY}s)"; sleep "$CHECK_EVERY"
-    t="$(cpu_temp)"; echo "  -> ${t}°C"
+
+cooldown_gate() {
+  say "Thermal gate: waiting if CPU temp >= ${MAX_TEMP}°C (checks every ${CHECK_EVERY}s)…"
+  while :; do
+    local cur; cur="$(read_max_temp)"
+    printf "  current temp: %s°C\r" "$cur"
+    if (( cur < MAX_TEMP )); then
+      echo
+      break
+    fi
+    sleep "$CHECK_EVERY"
   done
 }
-pac(){ cool_wait; sudo pacman -S --needed --noconfirm "$@"; }
 
-# -----------------------------------------------------------------------------------------
-# 0) Stop stray processes & prep
-# -----------------------------------------------------------------------------------------
-pkill -x waybar 2>/dev/null || true
-pkill -x hyprpaper 2>/dev/null || true
-pkill -x swww 2>/dev/null || true
-pkill -x mako 2>/dev/null || true
+press_enter() {
+  read -r -p $'\n[PAUSE] Press ENTER to continue… ' _ || true
+}
 
-say "Install prerequisites…"
-pac base-devel git fish lm_sensors
+short_pause() { sleep "$PAUSE_SECS"; }
 
-# yay (AUR helper)
-if ! have yay; then
-  say "Installing yay…"
-  tmpdir="$(mktemp -d)"
-  git clone https://aur.archlinux.org/yay.git "$tmpdir/yay"
-  ( cd "$tmpdir/yay"; cool_wait; nice -n 19 ionice -c3 makepkg -si --noconfirm )
-  rm -rf "$tmpdir"
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+LOG_DIR="$HOME"
+RUN_LOG="$LOG_DIR/caelestia_cool_install_$(date +%F_%H%M%S).log"
+exec > >(tee -a "$RUN_LOG") 2>&1
+
+say "Logs: $RUN_LOG"
+say "Run this from a TTY (Ctrl+Alt+F3)."
+
+# ---------------- Batch 1: base tools ----------------
+say "Installing minimal prerequisites."
+cooldown_gate
+sudo pacman -Syu --needed --noconfirm \
+  git fish lm_sensors python-pip python \
+  base-devel
+
+short_pause; press_enter
+
+# ---------------- Batch 2: fix conflicts & yay ----------------
+say "Removing stable swww if present (to avoid conflict with swww-git)."
+sudo pacman -R --noconfirm swww || true
+
+say "Ensuring yay (AUR helper) is available."
+if ! need_cmd yay; then
+  cooldown_gate
+  rm -rf "$HOME/yay"
+  git clone https://aur.archlinux.org/yay.git "$HOME/yay"
+  ( cd "$HOME/yay" && makepkg -si --noconfirm )
+else
+  say "yay already installed."
 fi
 
-# -----------------------------------------------------------------------------------------
-# 1) Resolve swww conflict + Caelestia CLI
-# -----------------------------------------------------------------------------------------
-if pacman -Qi swww &>/dev/null; then
-  say "Removing stable swww (conflicts with swww-git)…"
-  sudo pacman -Rns --noconfirm swww || true
-fi
+short_pause; press_enter
 
-say "Install swww-git + caelestia-cli-git (AUR)…"
-cool_wait
-nice -n 19 ionice -c3 yay -S --needed --noconfirm swww-git caelestia-cli-git
+# ---------------- Batch 3: core Hypr + companions ----------------
+say "Installing Hyprland + companions (repo packages)."
+cooldown_gate
+sudo pacman -S --needed --noconfirm \
+  hyprland xdg-desktop-portal-hyprland \
+  waybar wofi kitty mako hyprpaper wl-clipboard grimblast \
+  qt6ct qt5ct pipewire wireplumber polkit-gnome \
+  noto-fonts ttf-jetbrains-mono ttf-font-awesome lm_sensors
 
-# -----------------------------------------------------------------------------------------
-# 2) Core Wayland/Hyprland stack
-# -----------------------------------------------------------------------------------------
-say "Install Hyprland + runtime…"
-pac hyprland sddm waybar wofi kitty mako hyprpaper \
-    wl-clipboard grim slurp jq \
-    pipewire pipewire-pulse wireplumber \
-    polkit-gnome xdg-desktop-portal-hyprland \
-    noto-fonts ttf-jetbrains-mono ttf-font-awesome imagemagick
+short_pause; press_enter
 
-# SDDM session file & services
-say "Configure SDDM for Hyprland…"
-sudo mkdir -p /usr/share/wayland-sessions
-sudo tee /usr/share/wayland-sessions/hyprland.desktop >/dev/null <<'EOF'
+say "Installing swww-git (AUR) for wallpaper transitions."
+cooldown_gate
+yay -S --needed --noconfirm swww-git
+
+short_pause; press_enter
+
+# ---------------- Batch 4: SDDM + session ----------------
+say "Installing & enabling SDDM (display manager)."
+cooldown_gate
+sudo pacman -S --needed --noconfirm sddm
+sudo systemctl enable sddm.service
+
+# Ensure Hyprland session desktop file exists (normally provided)
+if [[ ! -f /usr/share/wayland-sessions/hyprland.desktop ]]; then
+  say "Creating Hyprland desktop file for SDDM."
+  tmpf="$(mktemp)"
+  cat >"$tmpf" <<'EOF'
 [Desktop Entry]
 Name=Hyprland
-Comment=Hyprland Session (Wayland)
-Exec=dbus-run-session /usr/bin/Hyprland
+Comment=An intelligent dynamic tiling Wayland compositor
+Exec=/usr/bin/Hyprland
 Type=Application
+DesktopNames=Hyprland
 EOF
-sudo systemctl enable --now sddm || true
-sudo systemctl enable --now NetworkManager || true
-sudo systemctl enable --now bluetooth || true
-
-# -----------------------------------------------------------------------------------------
-# 3) Clean End-4 leftovers and BACKUP your configs
-# -----------------------------------------------------------------------------------------
-say "Backup current configs (fish, hypr, waybar, wofi, kitty)…"
-BKP="$HOME/.config_backup_cael_$(date +%F_%H%M%S)"
-mkdir -p "$BKP"
-for d in fish hypr waybar wofi kitty; do
-  if [ -e "$HOME/.config/$d" ]; then
-    mv "$HOME/.config/$d" "$BKP/" || true
-  fi
-done
-rm -rf "$HOME/dots-hyprland" 2>/dev/null || true   # End-4 clone path (if any)
-
-# -----------------------------------------------------------------------------------------
-# 4) Clone/update Caelestia repo
-# -----------------------------------------------------------------------------------------
-CAEL_DIR="$HOME/.local/share/caelestia"
-say "Fetch Caelestia repo…"
-mkdir -p "$(dirname "$CAEL_DIR")"
-if [[ -d "$CAEL_DIR/.git" ]]; then
-  git -C "$CAEL_DIR" pull --ff-only
-else
-  git clone https://github.com/caelestia-dots/shell.git "$CAEL_DIR"
+  sudo install -m 644 "$tmpf" /usr/share/wayland-sessions/hyprland.desktop
+  rm -f "$tmpf"
 fi
 
-# -----------------------------------------------------------------------------------------
-# 5) Heat-safe wrapper and run upstream install.fish
-# -----------------------------------------------------------------------------------------
-RUNF="$CAEL_DIR/.cool_run_install.fish"
-say "Create heat-safe Fish runner…"
-cat >"$RUNF" <<'FISH'
-function __cool_get_temp
-  bash -lc 'sensors 2>/dev/null | awk "/Tctl:|Package id 0:|Tdie:|CPU temp:|CPU Temperature:|temp1:/{for(i=1;i<=NF;i++) if(\$i~/[0-9]+(\\.[0-9]+)?°C/){gsub(/[+°C]/,\"\",$i); print \$i+0}}\" | sort -nr | head -n1'
-end
-function cool_wait
-  if not type -q sensors
-    sudo pacman -S --needed --noconfirm lm_sensors >/dev/null 2>&1
-  end
-  set -l t (__cool_get_temp); test -z "$t"; and set t 0
-  echo "CPU temp: $t°C (limit $MAX_TEMP°C)"
-  while test (math "floor($t)") -ge $MAX_TEMP
-    echo "… cooling (sleep $CHECK_EVERY s)"; sleep $CHECK_EVERY
-    set t (__cool_get_temp)
-  end
-end
-set -x MAKEFLAGS -j1
-set -x CFLAGS "-O2"
-set -x CXXFLAGS "-O2"
+short_pause; press_enter
 
-functions -q yay;    and functions -c yay    __orig_yay
-functions -q paru;   and functions -c paru   __orig_paru
-functions -q pacman; and functions -c pacman __orig_pacman
-functions -q makepkg;and functions -c makepkg __orig_makepkg
-functions -q git;    and functions -c git    __orig_git
-functions -q cmake;  and functions -c cmake  __orig_cmake
-functions -q ninja;  and functions -c ninja  __orig_ninja
-function yay;    cool_wait; command nice -n 19 ionice -c3 __orig_yay $argv;    end
-function paru;   cool_wait; command nice -n 19 ionice -c3 __orig_paru $argv;   end
-function pacman; cool_wait; command nice -n 19 ionice -c3 __orig_pacman $argv; end
-function makepkg;cool_wait; command nice -n 19 ionice -c3 __orig_makepkg $argv;end
-function git;    cool_wait; command nice -n 19 ionice -c3 __orig_git $argv;    end
-function cmake;  cool_wait; command nice -n 19 ionice -c3 __orig_cmake $argv;  end
-function ninja;  cool_wait; command nice -n 19 ionice -c3 __orig_ninja $argv;  end
+# ---------------- Batch 5: clone Caelestia & backup configs ----------------
+CE_DIR="$HOME/.local/share/caelestia"
+say "Cloning Caelestia-Shell repo."
+cooldown_gate
+rm -rf "$CE_DIR"
+git clone https://github.com/caelestia-dots/shell "$CE_DIR"
 
-# Run upstream installer (exactly like the video)
+BACKUP_DIR="$HOME/.config_backup_caelestia_$(date +%F_%H%M%S)"
+say "Backing up your ~/.config to: $BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+# light, safe backup (don’t fail if some are missing)
+rsync -a --delete --mkpath "$HOME/.config/" "$BACKUP_DIR/" || true
+
+short_pause; press_enter
+
+# ---------------- Batch 6: run Caelestia installer (heat-safe) ----------------
+say "Preparing heat-safe runner for Caelestia install."
+RUNNER="$CE_DIR/_cool_run_install.fish"
+cat >"$RUNNER" <<'FISH'
+function read_max_temp --description "Return max temp (°C) across thermal zones"
+  set -l max 0
+  for z in /sys/class/thermal/thermal_zone*/temp
+    if test -r $z
+      set t (cat $z)
+      set t (math "$t / 1000")
+      if test $t -gt $max
+        set max $t
+      end
+    end
+  end
+  echo $max
+end
+
+set -l MAX_TEMP (string replace -r '.*=' '' (string match -r 'MAX_TEMP=.*' (env)))[1]
+set -q MAX_TEMP; or set MAX_TEMP 82
+set -l CHECK_EVERY (string replace -r '.*=' '' (string match -r 'CHECK_EVERY=.*' (env)))[1]
+set -q CHECK_EVERY; or set CHECK_EVERY 15
+
+function cool_gate
+  echo (set_color cyan)"[cooldown] waiting if temp >= $MAX_TEMP°C …"(set_color normal)
+  while true
+    set cur (read_max_temp)
+    printf "  temp: %s°C\r" $cur
+    if test "$cur" -lt "$MAX_TEMP"
+      echo
+      break
+    end
+    sleep $CHECK_EVERY
+  end
+end
+
+cool_gate
+
+# run the official installer (interactive; you choose backup option)
 source ~/.local/share/caelestia/install.fish
 FISH
 
-export MAX_TEMP CHECK_EVERY
-say "Run Caelestia installer…"
-fish "$RUNF" || true   # allow non-fatal warnings during install
+say "Starting Caelestia install (you will see its menu)."
+say "TIP: choose 'Make one for me please' when asked to backup config."
+cooldown_gate
+# Run under fish so its ANSI prompts render correctly.
+fish "$RUNNER" || warn "Installer returned a non-zero status (continuing)."
 
-# -----------------------------------------------------------------------------------------
-# 6) Force-apply Caelestia dotfiles (now that installer has placed them)
-# -----------------------------------------------------------------------------------------
-say "Apply Caelestia dotfiles into ~/.config (backups already made)…"
-CAEL_CFG="$CAEL_DIR/config"
-if [ -d "$CAEL_CFG" ]; then
-  rsync -a --delete "$CAEL_CFG/" "$HOME/.config/"
-fi
+short_pause; press_enter
 
-# Ensure rescues: wallpaper + waybar + launcher + binds
-say "Ensure no-blank fallback (wallpaper + bar + binds)…"
-mkdir -p "$HOME/.config/wallpapers" "$HOME/.config/hypr" "$HOME/.config/waybar"
-if ! ls "$HOME/.config/wallpapers/"* >/dev/null 2>&1; then
-  convert -size 1920x1080 gradient:'#1f1f28-#24283b' "$HOME/.config/wallpapers/caelestia-fallback.png"
-fi
-WP="$(ls -1 "$HOME/.config/wallpapers/"* | head -n1)"
+# ---------------- Batch 7: ensure Caelestia CLI is available ----------------
+say "Ensuring 'caelestia' CLI (Python) is installed."
+cooldown_gate
+python3 -m pip install --user --upgrade caelestia || warn "pip install caelestia failed (will proceed)."
 
-# waybar minimal (only if Caelestia's file missing)
-if [ ! -f "$HOME/.config/waybar/config.jsonc" ]; then
-  cat > "$HOME/.config/waybar/config.jsonc" <<'JSON'
-{
-  "layer":"top","position":"top","height":30,
-  "modules-left":["clock"],
-  "modules-right":["pulseaudio","network","battery","tray"],
-  "clock":{"format":"{:%a %d %b %H:%M}"},
-  "pulseaudio":{"format":"{volume}%"},
-  "network":{"format-wifi":"{essid} {signalStrength}%"},
-  "battery":{"bat":"BAT0","format":"{capacity}%"}
-}
-JSON
-fi
-
-# autostart (only if Caelestia didn't already add one)
-if ! grep -Rqs 'autostart.sh' "$HOME/.config/hypr"; then
-  cat > "$HOME/.config/hypr/autostart.sh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP DESKTOP_SESSION GTK_THEME QT_QPA_PLATFORMTHEME || true
-pkill -x waybar 2>/dev/null || true
-pkill -x hyprpaper 2>/dev/null || true
-if command -v swww >/dev/null 2>&1; then
-  swww init 2>/dev/null || true
-  swww img "$WP" --transition-type none 2>/dev/null || true
+# Try to finalize theme & shell configs (these do not require Hyprland running)
+if command -v caelestia >/dev/null 2>&1; then
+  say "Applying default Caelestia scheme and shell configs."
+  caelestia scheme set -n shadotheme || warn "scheme apply skipped."
+  caelestia shell -d || warn "shell apply skipped."
 else
-  echo -e "preload = $WP\nwallpaper = ,$WP\nsplash = false" > "$HOME/.config/hypr/hyprpaper.conf"
-  hyprpaper &
-fi
-waybar &   # bar
-mako &     # notifications if installed
-EOF
-  chmod +x "$HOME/.config/hypr/autostart.sh"
-  grep -q 'exec-once = ' "$HOME/.config/hypr/hyprland.conf" 2>/dev/null || true
-  echo 'exec-once = $HOME/.config/hypr/autostart.sh' >> "$HOME/.config/hypr/hyprland.conf"
+  warn "'caelestia' command not found after install; skipping scheme/shell apply."
 fi
 
-# Keybind safety net (if not already present)
-if ! grep -Rqs 'wofi --show drun' "$HOME/.config/hypr"; then
-  cat >> "$HOME/.config/hypr/hyprland.conf" <<'HYPR'
-bind = SUPER, RETURN, exec, kitty
-bind = SUPER, D, exec, wofi --show drun
-bind = SUPER, Q, killactive
-bind = SUPER, R, exec, hyprctl reload
-HYPR
-fi
+short_pause; press_enter
 
-# Input access to remove permission errors
-if ! id -nG "$USER" | grep -qw input; then
-  sudo usermod -aG input "$USER" || true
-  echo "NOTE: you were added to 'input' group. Log out/in if input warnings persist."
-fi
+# ---------------- Batch 8: final niceties ----------------
+say "Re-applying wallpaper fallback and ensuring services are OK."
+mkdir -p "$HOME/.config/wallpapers"
+# If the repo shipped a fallback, leave it; otherwise touch a blank file so Hyprpaper won’t choke.
+[[ -f "$HOME/.config/wallpapers/caelestia-fallback.png" ]] || convert -size 1920x1080 xc:#101216 "$HOME/.config/wallpapers/caelestia-fallback.png" 2>/dev/null || true
 
-say "DONE. Reboot → pick Hyprland in SDDM. You should see Caelestia’s UI."
-echo "Log saved to: $LOG"
+say "All batches done."
+echo
+echo "Next steps:"
+echo "  1) reboot"
+echo "  2) in SDDM, pick 'Hyprland' and log in"
+echo "If you land on a blank screen with cursor, press Super+Enter to open Kitty, then run:"
+echo "  swww init && swww img ~/.config/wallpapers/caelestia-fallback.png"
+echo "  pkill waybar && waybar &"
+echo
+say "Done. Logs saved to: $RUN_LOG"

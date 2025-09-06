@@ -1,149 +1,243 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG="$HOME/end4_install_$(date +%F_%H%M%S).log"
+# ============ helpers ============
+bold(){ printf "\e[1m%s\e[0m\n" "$*"; }
+note(){ printf "\n\e[36m==> %s\e[0m\n" "$*"; }
+warn(){ printf "\n\e[33m[warn]\e[0m %s\n" "$*"; }
+die(){ printf "\n\e[31m[fail]\e[0m %s\n" "$*"; exit 1; }
+
+if [[ $EUID -eq 0 ]]; then
+  die "Run this as your normal user from TTY (not with sudo). I will sudo when needed."
+fi
+
+ME_USER="${USER}"
+ME_HOME="$(getent passwd "$ME_USER" | cut -d: -f6)"
+TS="$(date +%F_%H%M%S)"
+LOG="$ME_HOME/hypr_one_fix_${TS}.log"
 exec > >(tee -a "$LOG") 2>&1
 
-say(){ printf "\n\033[1;36m==>\033[0m %s\n" "$*"; }
+bold "Hyprland one-shot repair • log: $LOG"
 
-# ---------- sanity ----------
-if ! command -v sudo >/dev/null 2>&1; then
-  echo "sudo not found. pacman needs sudo privileges."
-  exit 1
+# ============ 0) Basic sanity ============
+note "Checking internet and pacman database lock…"
+ping -c1 -W2 archlinux.org >/dev/null 2>&1 || warn "No ping; assuming network is OK via mirror. Continuing."
+if sudo fuser /var/lib/pacman/db.lck >/dev/null 2>&1; then
+  note "Removing stale pacman lock"
+  sudo rm -f /var/lib/pacman/db.lck || true
 fi
 
-# pacman lock helper (non-destructive)
-unlock_pacman(){
-  if [ -e /var/lib/pacman/db.lck ]; then
-    sudo ls -l /var/lib/pacman/db.lck || true
-    say "pacman appears locked. If no other pacman is running, removing lock."
-    sudo rm -f /var/lib/pacman/db.lck
+# ============ 1) Resolve swww vs swww-git conflict ============
+note "Normalizing swww package (remove conflict and install swww-git)…"
+if pacman -Q swww >/dev/null 2>&1; then
+  sudo pacman -Rns --noconfirm swww || true
+fi
+# Install/keep swww-git (fits your earlier setup and avoids conflict prompts)
+if ! pacman -Q swww-git >/dev/null 2>&1; then
+  sudo pacman -S --needed --noconfirm base-devel git || true
+  # Try regular repo first (some mirrors carry it), fallback to AUR helperless build
+  if ! sudo pacman -S --needed --noconfirm swww-git; then
+    note "Building swww-git from AUR (no helper)…"
+    TMPD="$(mktemp -d)"
+    trap 'rm -rf "$TMPD"' EXIT
+    ( cd "$TMPD" && git clone https://aur.archlinux.org/swww-git.git && cd swww-git && makepkg -si --noconfirm )
   fi
-}
-
-# ---------- base packages ----------
-PKGS=(
-  # hyprland core
-  hyprland xdg-desktop-portal-hyprland xdg-desktop-portal
-  waybar wofi kitty mako hyprpaper grim slurp wl-clipboard wlogout
-  polkit-gnome network-manager-applet bluez bluez-utils pipewire
-  pipewire-alsa pipewire-pulse wireplumber brightnessctl playerctl
-  noto-fonts ttf-jetbrains-mono ttf-font-awesome lm_sensors fastfetch
-)
-
-say "Refreshing package databases…"
-unlock_pacman
-sudo pacman -Sy --needed --noconfirm
-
-say "Resolving swww conflicts (prefer stable 'swww')…"
-if pacman -Q swww-git >/dev/null 2>&1; then
-  sudo pacman -R --noconfirm swww-git || true
-fi
-# ensure stable swww is present
-if ! pacman -Q swww >/dev/null 2>&1; then
-  sudo pacman -S --noconfirm swww || true
 fi
 
-say "Installing core packages…"
-unlock_pacman
-sudo pacman -S --needed --noconfirm "${PKGS[@]}"
+# ============ 2) Core packages (skip already-installed) ============
+note "Installing core Hyprland stack (skipping installed ones)…"
+sudo pacman -Syu --noconfirm
+sudo pacman -S --needed --noconfirm \
+  hyprland waybar wofi kitty mako \
+  hyprpaper xdg-desktop-portal-hyprland polkit-gnome \
+  wl-clipboard grim slurp brightnessctl network-manager-applet \
+  noto-fonts ttf-jetbrains-mono noto-fonts-emoji lm_sensors
 
-# ---------- End-4 repo ----------
-DOTS_ROOT="$HOME/.local/share/end4"
-DOTS_DIR="$DOTS_ROOT/dots-hyprland"
-mkdir -p "$DOTS_ROOT"
+# Optional but useful for GPU/input perms
+sudo pacman -S --needed --noconfirm libinput
 
-if [ -d "$DOTS_DIR/.git" ]; then
-  say "Updating End-4 dots…"
-  git -C "$DOTS_DIR" pull --ff-only
-else
-  say "Cloning End-4 dots…"
-  git clone --depth=1 https://github.com/End-4/dots-hyprland "$DOTS_DIR"
+# ============ 3) Ensure SDDM session entry ============
+note "Ensuring Hyprland session file exists…"
+SESSION_FILE="/usr/share/wayland-sessions/hyprland.desktop"
+if [[ ! -f "$SESSION_FILE" ]]; then
+  sudo tee "$SESSION_FILE" >/dev/null <<'EOF'
+[Desktop Entry]
+Name=Hyprland
+Comment=Dynamic tiling Wayland compositor
+Exec=Hyprland
+Type=Application
+EOF
 fi
 
-# ---------- backup configs ----------
-CFG="$HOME/.config"
-BACKUP="$HOME/.config_backup_end4_$(date +%F_%H%M%S)"
-say "Backing up current ~/.config → $BACKUP"
-mkdir -p "$BACKUP"
-# Back up only items End-4 touches
-for d in hypr waybar wofi mako kitty fish foot grimblast hyprpaper; do
-  if [ -e "$CFG/$d" ]; then
-    mv "$CFG/$d" "$BACKUP/" || true
+# Optionally make SDDM default to Hyprland
+note "Setting SDDM default session to Hyprland (non-fatal if SDDM absent)…"
+sudo install -d -m 755 /etc/sddm.conf.d || true
+sudo tee /etc/sddm.conf.d/10-session.conf >/dev/null <<'EOF'
+[Autologin]
+Relogin=false
+
+[General]
+HaltCommand=/usr/bin/systemctl poweroff
+RebootCommand=/usr/bin/systemctl reboot
+
+[Theme]
+# keep default
+
+[Users]
+HideShells=/sbin/nologin,/bin/false
+
+[Wayland]
+Session=hyprland.desktop
+EOF
+
+# ============ 4) Fix user groups (input/video/render/seat) ============
+note "Adding user to input/video/render/seat groups…"
+# (Groups may not exist on all distros; ignore failures)
+for g in input video render seat; do
+  if getent group "$g" >/dev/null 2>&1; then
+    sudo usermod -aG "$g" "$ME_USER" || true
   fi
 done
 
-# ---------- fix common FILE vs DIR bug ----------
-say "Fixing file-vs-dir issues in ~/.config…"
-# If ~/.config/hypr was accidentally created as a file, move it away
-if [ -f "$CFG/hypr" ]; then
-  mv "$CFG/hypr" "$BACKUP/hypr_as_file.$(date +%s)" || true
-fi
-mkdir -p "$CFG/hypr" "$CFG"
+# ============ 5) Minimal safe configs ============
+CFG="$ME_HOME/.config"
+HYPR_DIR="$CFG/hypr"
+WB_DIR="$CFG/waybar"
+HP_DIR="$CFG/hyprpaper"
+WO_DIR="$CFG/wofi"
 
-# ---------- copy configs (force-merge) ----------
-say "Copying End-4 configs into ~/.config (force-merge, no non-dir errors)…"
-# use rsync to merge without tripping on existing dirs
-if ! command -v rsync >/dev/null 2>&1; then
-  sudo pacman -S --needed --noconfirm rsync
-fi
-rsync -a --mkpath "$DOTS_DIR/config/" "$CFG/"
+note "Backing up any existing configs…"
+mkdir -p "$ME_HOME/.config_backup_hypr_fix_$TS"
+for d in hypr waybar hyprpaper wofi; do
+  if [[ -e "$CFG/$d" ]]; then
+    mv "$CFG/$d" "$ME_HOME/.config_backup_hypr_fix_$TS/" || true
+  fi
+done
 
-# ---------- hyprpaper fallback ----------
-WALL="$HOME/.config/wallpapers"
-mkdir -p "$WALL"
-if [ ! -s "$WALL/end4-fallback.png" ]; then
-  say "Placing a simple fallback wallpaper…"
-  # a tiny 1x1 dark png if none exists
-  printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0\x90wS\xde\0\0\0\nIDATx\x9ccddbf\0\0\x01\x05\0\x01\xa4\x1c\x1a\xdb\0\0\0\0IEND\xaeB`\x82' \
-    > "$WALL/end4-fallback.png"
-fi
-# ensure hyprpaper conf exists & references fallback
-mkdir -p "$CFG/hypr"
-if [ ! -s "$CFG/hypr/hyprpaper.conf" ]; then
-  cat > "$CFG/hypr/hyprpaper.conf" <<EOF
-preload = $WALL/end4-fallback.png
-wallpaper = ,$WALL/end4-fallback.png
-splash = false
-ipc = true
+note "Writing minimal Hyprland config…"
+mkdir -p "$HYPR_DIR" "$WB_DIR" "$HP_DIR" "$WO_DIR"
+
+# Minimal hyprland.conf – no wallpaper/autostart that can crash; only waybar+kitty
+cat > "$HYPR_DIR/hyprland.conf" <<'EOF'
+# ---------- minimal, safe Hyprland config ----------
+monitor=,preferred,auto,1
+
+# XDG portal (prevents apps from complaining)
+env = XDG_CURRENT_DESKTOP,Hyprland
+env = XDG_SESSION_TYPE,wayland
+env = XDG_SESSION_DESKTOP,Hyprland
+
+# Cursor
+exec-once = hyprctl setcursor default 24
+
+# Panel + terminal (safe)
+exec-once = waybar
+exec-once = kitty
+
+# Keybinds
+$mod = SUPER
+bind = $mod, Q, exec, kitty
+bind = $mod, D, exec, wofi --show drun
+bind = $mod, C, killactive
+bind = $mod, Return, fullscreen, 0
+bind = $mod, F, togglefloating
+bind = $mod, E, exec, wofi --show run
+bind = $mod, S, exec, systemctl --user restart waybar
+
+# Basic animations off (safer on weak iGPU)
+animations {
+  enabled = no
+}
+
+misc {
+  disable_hyprland_logo = true
+  vfr = true
+}
+
+# Window rules sane defaults
+general {
+  gaps_in = 5
+  gaps_out = 10
+  border_size = 2
+  layout = dwindle
+  allow_tearing = false
+}
+
+input {
+  kb_layout = us
+  follow_mouse = 1
+  touchpad {
+    natural_scroll = true
+    disable_while_typing = true
+  }
+}
 EOF
-fi
 
-# ---------- SDDM session ----------
-say "Writing Hyprland desktop session for SDDM…"
-sudo install -Dm644 /dev/stdin /usr/share/wayland-sessions/hyprland.desktop <<'EOF'
-[Desktop Entry]
-Name=Hyprland
-Comment=Wayland compositor
-Exec=/usr/bin/Hyprland
-Type=Application
-X-GDM-SessionType=wayland
-DesktopNames=Hyprland
+note "Writing minimal Waybar config…"
+mkdir -p "$WB_DIR"
+cat > "$WB_DIR/config.jsonc" <<'EOF'
+// Minimal safe Waybar
+{
+  "layer": "top",
+  "position": "top",
+  "modules-left": ["clock"],
+  "modules-center": [],
+  "modules-right": ["network","pulseaudio","battery"],
+  "clock": { "format": "{:%a %d %b %H:%M}" },
+  "network": { "format-wifi": "{ssid} ({signalStrength}%)", "format-ethernet": "eth", "format-disconnected": "offline" },
+  "pulseaudio": { "format": "{volume}%" },
+  "battery": { "format": "{capacity}%" }
+}
+EOF
+cat > "$WB_DIR/style.css" <<'EOF'
+* { font-family: JetBrainsMono Nerd Font, monospace; font-size: 12px; }
+window { background: transparent; }
+#clock, #network, #pulseaudio, #battery { padding: 0 8px; }
 EOF
 
-# ---------- enable SDDM ----------
-if systemctl list-unit-files | grep -q '^sddm\.service'; then
-  say "Enabling SDDM…"
-  sudo systemctl enable sddm.service
-else
-  say "SDDM not installed. Installing and enabling…"
-  unlock_pacman
-  sudo pacman -S --needed --noconfirm sddm sddm-kcm
-  sudo systemctl enable sddm.service
-fi
+note "Writing tiny Wofi config…"
+cat > "$WO_DIR/config" <<'EOF'
+prompt=Run:
+show=drun
+width=50%
+height=50%
+allow_images=false
+EOF
 
-# ---------- user services on login (Waybar, Hyprpaper, Wofi) ----------
-# End-4 configs typically autostart from Hyprland config; nothing to do.
-# But ensure user/system env sane:
-say "Ensuring DBus / PipeWire / BlueZ are enabled…"
-sudo systemctl enable --now bluetooth.service >/dev/null 2>&1 || true
-systemctl --user enable --now pipewire.service pipewire-pulse.service wireplumber.service >/dev/null 2>&1 || true
+# Do NOT autostart wallpaper to avoid compositor crashes; user can enable later
+note "Hyprpaper/swww not auto-started to avoid crash loops. You can enable after session works."
 
-say "All set."
-echo
-say "NEXT STEPS:"
-echo " 1) Reboot."
-echo " 2) In SDDM, pick **Hyprland** and log in."
-echo " 3) If you see a blank screen, press Super+Enter (open kitty)."
-echo
-say "Logs saved to: $LOG"
+# Permissions sanity
+sudo chown -R "$ME_USER":"$ME_USER" "$CFG" "$ME_HOME/.config_backup_hypr_fix_$TS"
+
+# ============ 6) Portal & polkit on login ============
+note "User-level systemd units for portal/polkit…"
+SYSTEMD_USER="$ME_HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER"
+
+cat > "$SYSTEMD_USER/polkit-gnome.service" <<'EOF'
+[Unit]
+Description=Polkit GNOME agent
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/polkit-gnome-authentication-agent-1
+Restart=no
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload || true
+systemctl --user enable --now polkit-gnome.service || true
+
+# ============ 7) Final hints ============
+note "DONE. Now:"
+echo "  1) Reboot:    sudo reboot"
+echo "  2) In SDDM:   choose *Hyprland* session, log in."
+echo "  3) You should get Waybar (top) and a Kitty terminal."
+echo ""
+echo "If you still bounce back to SDDM:"
+echo "  • Switch to TTY (Ctrl+Alt+F3), log in and run:  Hyprland --verbose"
+echo "    Paste the last ~20 lines so we can see the exact error."

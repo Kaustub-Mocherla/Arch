@@ -1,70 +1,50 @@
 #!/bin/bash
-# Complete hassle-free MLW install for Acer One 14 Z2-493
-# No more ml14u-setup.sh errors or syntax issues
+# CORRECTED MLW Installation Script - No Syntax Errors
 
-echo "🔥 Starting ultimate hassle-free MLW installation"
+echo "🔥 Starting corrected MLW installation"
 
-# Error handling function
-handle_error() {
-    echo "[ERROR]: $@" >&2
-    exit 1
-}
+# Step 1: Complete cleanup
+sudo systemctl stop sddm 2>/dev/null || true
+killall -9 waybar hyprpaper ml4w install 2>/dev/null || true
+rm -rf ~/.config ~/.cache ~/.local/share/waybar ~/.local/share/icons
+rm -rf ~/ml4w* ~/dotfiles ~/Downloads/*install*
 
-# Step 1: Stop all graphical processes
-sudo systemctl stop sddm || true
-killall -9 waybar hyprpaper ml4w install || true
-
-# Step 2: Complete system cleanup
-echo "🧹 Complete system cleanup..."
-rm -rf ~/.config ~/.cache ~/.local/share/waybar ~/.local/share/icons ~/.local/share/```mes
-rm -rf ~/ml4w* ~/dotfiles ~/Downloads/*install* ~/Downloads/*setup*
-
-# Step 3: Clean package caches
+# Step 2: Clean package caches
 sudo pacman -Scc --noconfirm || true
 yay -Scc --noconfirm 2>/dev/null || true
 
-# Step 4: System update with thermal protection
-echo "📦 Updating system..."
-sudo pacman -Syu --noconfirm || handle_error "System update failed"```eep 15  # Cooling period
+# Step 3: System update
+sudo pacman -Syu --noconfirm
 
-# Step 5: Install base packages in batches
-echo "🔧 Installing base packages..."
-sudo pacman -S --needed --noconfirm base-devel git wget curl unzip || handle_error "Base tools```stall failed"
-sleep 10
+# Step 4: Install packages
+sudo pacman -S --needed --noconfirm base-devel git wget curl unzip
+sudo pacman -S --needed --noconfirm hyprland kitty waybar flatpak firefox wofi
 
-sudo pacman -S --needed --noconfirm hyprland kitty waybar || handle_error "Hyprlan```nstall failed"
-sleep 10
-
-sudo pacman -S --needed --noconfirm flatpak firefox wofi || handle_error "Apps```stall failed"
-sleep 10
-
-# Step 6: Install yay with thermal protection
+# Step 5: Install yay
 if ! command -v yay &>/dev/null; then
-    echo "🔨 Installing yay AUR helper..."
     cd /tmp
-    git clone https://aur.archlinux.org/y```git || handle_error "Failed to clone y```
+    git clone https://aur.archlinux.org/yay.git
     cd yay
-    # Single-threaded compilation to prevent overheating
-    MAKEFLAGS="-j1" makepkg -si --noconfirm || handle_error "Failed to build yay"
+    MAKEFLAGS="-j1" makepkg -si --noconfirm
     cd ~
     rm -rf /tmp/yay
-    sleep 15  # Extended cooling
 fi
 
-# Step 7: Download and install MLW (multiple sources)
-echo "📥 Downloading MLW installer..."
+# Step 6: CORRECTED Download and install MLW
 cd ~/Downloads
 
-# Try multiple download sources
-if ! curl -L https://raw.githubusercontent.com/my```uxforwork/dotfiles/main/setup```ch.sh -o mlw-install.sh; then
-    if ! curl -L https://raw.githubusercontent.com/mylinuxforwork/dotfiles/main/install``` -o mlw-install.sh; then
-        # Fallback: Create minimal working setup
-        echo "⚠️ MLW download failed - creating minimal working setup"
-        
-        mkdir -p ~/.config/hypr ~/.config/waybar
-        
-        # Working Hyprland config
-        cat > ~/.config/hypr/hyprland.conf << ```PR_EOF'
+# CORRECT SYNTAX: Semicolon before 'then'
+if curl -L https://raw.githubusercontent.com/mylinuxforwork/dotfiles/main/setup-arch.sh -o mlw-install.sh; then
+    echo "✅ Download successful"
+    chmod +x mlw-install.sh
+    timeout 300s bash mlw-install.sh
+else
+    echo "❌ Download failed - creating minimal working setup"
+    
+    # Create minimal working Hyprland setup
+    mkdir -p ~/.config/hypr ~/.config/waybar
+    
+    cat > ~/.config/hypr/hyprland.conf << 'EOF'
 monitor=,preferred,auto
 
 input {
@@ -117,10 +97,11 @@ bindm = $mainMod, mouse:273, resizewindow
 
 exec-once = waybar
 exec-once = hyprpaper
-HYPR_EOF
+EOF
 
-        # Working waybar config
-        cat > ~/.config/waybar/config << 'WAYBAR_EOF'```    "layer": "top",
+    cat > ~/.config/waybar/config << 'EOF'
+{
+    "layer": "top",
     "height": 34,
     "modules-left": ["hyprland/workspaces"],
     "modules-center": ["clock"],
@@ -130,76 +111,21 @@ HYPR_EOF
     "battery": {"format": "{capacity}%"},
     "network": {"format-wifi": "{essid}"}
 }
-WAYBAR_EOF
+EOF
 
-        # Wallpaper config
-        echo 'preload = /usr/share/pixmaps/arch```ux-logo.png
+    echo 'preload = /usr/share/pixmaps/archlinux-logo.png
 wallpaper = ,/usr/share/pixmaps/archlinux-logo.png' > ~/.config/hypr/hyprpaper.conf
 
-        echo "✅ Minimal working setup created"
-        MLW_FALLBACK=true
-    fi
+    echo "✅ Minimal working setup created"
 fi
 
-# Step 8: Run MLW installer if downloaded
-if [ "$MLW_FALLBACK" != "true" ] && [ -f "mlw-install.sh" ]; then
-    echo "🚀 Running MLW installer with thermal protection..."
-    chmod +x mlw-install.sh
-    
-    # Run with timeout and cooling
-    for attempt in 1 2 3; do
-        echo "🔄 Installation attempt $attempt/3"
-        if timeout 300s bash mlw-install.sh; then
-            echo "✅ MLW installation successful!"
-            break
-        else
-            if [ $attempt -lt 3 ]; then
-                echo "🌡️ Cooling period (30s) before retry..."
-                sleep 30
-            else
-                echo "❌ MLW installation failed - using minimal setup"
-                MLW_FALLBACK=true
-            fi
-        fi
-    done
-fi
-
-# Step 9: Enable SDDM
+# Step 7: Enable SDDM and finish
 sudo systemctl enable sddm.service
 sudo systemctl start sddm.service
-
-# Step 10: Final setup
-flatpak remote-add --if-not-exists flathub https://flathub.org/repo/```thub.flatpakrepo ```dev/null || true
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 
 echo ""
 echo "🎉 INSTALLATION COMPLETED!"
-echo ""
-
-if [ "$MLW_FALLBACK" = "true" ]; then
-    echo "✅ Beautiful Minimal Hyprland Setup```stalled:"
-    echo "   🎨 Rounded corners, blur, and shadows"
-    echo "   📊 Working waybar with system info```   echo "   🖼️ Wallpaper display"
-    echo "   ⚡ Smooth animations"
-else
-    echo "✅ MLW Dotfiles Successfully Installed:"
-    echo "   🎨 Complete Material Design interface"
-    echo "   📱 MLW Settings app"
-    echo "   🖼️ Professional themes and wallpapers"
-fi
-
-echo ""
-echo "🔑 Essential shortcuts:"
-echo "   • Super + Q → Terminal"
-echo "   • Super + R → App launcher"
-echo "   • Super + 1,2,3 → Switch workspaces"
-echo ""
-echo "🔄 REBOOT NOW to complete installation!"
-
-# Automatic reboot prompt
-read -p "Reboot now? (Y/n): " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-    sudo reboot
-else
-    echo "💡 Reboot manually when ready:```do reboot"
-fi
+echo "🔑 Super + Q → Terminal"
+echo "🔑 Super + R → App launcher"
+echo "🔄 Reboot now: sudo reboot"

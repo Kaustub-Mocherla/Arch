@@ -1,21 +1,28 @@
-cat > ~/fix-desktop.sh << 'EOF'
+# First, get back to your home directory
+cd ~
+
+# Create and run the desktop fix script
+cat > ~/fix-desktop-now.sh << 'EOF'
 #!/bin/bash
-echo "🔧 Fixing Hyprland Desktop Components"
+echo "🔧 Emergency Desktop Fix"
 
-# Kill problematic processes
+# Kill any stuck processes
 killall waybar swww hyprpaper 2>/dev/null || true
-sleep 2
+sleep 3
 
-# Create basic waybar config if missing
+# Install waybar if missing
+sudo pacman -S --needed --noconfirm waybar hyprpaper
+
+# Create basic waybar config
 mkdir -p ~/.config/waybar
 cat > ~/.config/waybar/config << 'WAYBAR'
 {
     "layer": "top",
-    "position": "top",
+    "position": "top", 
     "height": 30,
     "modules-left": ["hyprland/workspaces"],
     "modules-center": ["clock"],
-    "modules-right": ["battery", "network"],
+    "modules-right": ["battery"],
     
     "hyprland/workspaces": {
         "format": "{id}"
@@ -24,35 +31,33 @@ cat > ~/.config/waybar/config << 'WAYBAR'
         "format": "{:%H:%M}"
     },
     "battery": {
-        "format": "{capacity}% {icon}",
-        "format-icons": ["", "", "", "", ""]
-    },
-    "network": {
-        "format-wifi": "{essid}",
-        "format-disconnected": "Disconnected"
+        "format": "{capacity}%",
+        "states": {
+            "warning": 30,
+            "critical": 15
+        }
     }
 }
 WAYBAR
 
-# Create basic hyprpaper config
+# Create wallpaper config
 mkdir -p ~/.config/hypr
 cat > ~/.config/hypr/hyprpaper.conf << 'PAPER'
 preload = /usr/share/pixmaps/archlinux-logo.png
 wallpaper = ,/usr/share/pixmaps/archlinux-logo.png
-ipc = on
 PAPER
 
-# Start components
+# Start desktop components
 echo "Starting waybar..."
 waybar &
 sleep 2
 
 echo "Starting wallpaper..."
 hyprpaper &
+sleep 2
 
-echo "✅ Desktop components started!"
-echo "You should now see waybar at top and wallpaper"
+echo "✅ Desktop should now be visible!"
 EOF
 
-chmod +x ~/fix-desktop.sh
-./fix-desktop.sh
+chmod +x ~/fix-desktop-now.sh
+./fix-desktop-now.sh

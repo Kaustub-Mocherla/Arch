@@ -1,118 +1,36 @@
 #!/bin/bash
-# Install Federation Login with Stardate SDDM Theme
-# Based on the GitHub repository: https://github.com/Amdirgol/federation-login-with-stardate.git
+# Fix Federation SDDM Theme Error
 
-echo "🚀 Installing Federation Login with Stardate SDDM Theme"
-echo "======================================================="
+echo "🔧 Fixing Federation SDDM Theme Error"
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Switch to default theme temporarily
+sudo tee /etc/sddm.conf > /dev/null << 'EOF'
+[General]
+HaltCommand=/usr/bin/systemctl poweroff
+RebootCommand=/usr/bin/systemctl reboot
+Numlock=off
 
-print_status() { echo -e "${GREEN}✅ $1${NC}"; }
-print_error() { echo -e "${RED}❌ $1${NC}"; }
-print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
-print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+[Theme]
+Current=
 
-# Function to check if running as root
-check_root() {
-    if [[ $EUID -eq 0 ]]; then
-        print_error "Please run this script as regular user (not root)"
-        exit 1
-    fi
-}
+[Users]
+RememberLastSession=true
+RememberLastUser=true
 
-# Function to install required packages
-install_requirements() {
-    echo "📦 Installing required packages..."
-    
-    PACKAGES="git sddm qt5-graphicaleffects qt5-quickcontrols2 qt5-svg"
-    
-    if command -v pacman &> /dev/null; then
-        sudo pacman -S --needed --noconfirm $PACKAGES
-    elif command -v apt &> /dev/null; then
-        sudo apt update && sudo apt install -y $PACKAGES qtquickcontrols2-5-dev qml-module-qtquick-controls2
-    elif command -v dnf &> /dev/null; then
-        sudo dnf install -y $PACKAGES qt5-qtquickcontrols2-devel
-    fi
-    
-    print_status "Required packages installed"
-}
+[Wayland]
+SessionDir=/usr/share/wayland-sessions
 
-# Function to backup existing SDDM configuration
-backup_sddm_config() {
-    echo "💾 Backing up existing SDDM configuration..."
-    
-    BACKUP_DIR="$HOME/.sddm-backup-$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$BACKUP_DIR"
-    
-    if [[ -f "/etc/sddm.conf" ]]; then
-        sudo cp /etc/sddm.conf "$BACKUP_DIR/"
-    fi
-    
-    if [[ -d "/etc/sddm.conf.d" ]]; then
-        sudo cp -r /etc/sddm.conf.d "$BACKUP_DIR/"
-    fi
-    
-    print_status "SDDM configuration backed up to: $BACKUP_DIR"
-    echo "$BACKUP_DIR" > /tmp/sddm_backup_location
-}
+[X11]
+SessionDir=/usr/share/xsessions
+EOF
 
-# Function to clone and install the Federation theme
-install_federation_theme() {
-    echo "🎨 Installing Federation Login with Stardate theme..."
-    
-    # Create temporary directory
-    TEMP_DIR="/tmp/federation-stardate-install"
-    mkdir -p "$TEMP_DIR"
-    cd "$TEMP_DIR"
-    
-    # Clone the repository
-    print_info "Cloning Federation theme repository..."
-    if git clone https://github.com/Amdirgol/federation-login-with-stardate.git; then
-        print_status "Repository cloned successfully"
-    else
-        print_error "Failed to clone repository"
-        print_info "Falling back to manual download..."
-        
-        # Fallback: create the theme manually if git clone fails
-        mkdir -p federation-login-with-stardate
-        cd federation-login-with-stardate
-        
-        # Create basic theme structure (fallback)
-        create_fallback_theme
-        cd ..
-    fi
-    
-    # Install theme to system directory
-    cd federation-login-with-stardate
-    
-    # Ensure theme directory exists
-    sudo mkdir -p /usr/share/sddm/themes/federation-stardate
-    
-    # Copy theme files
-    if [[ -f "Main.qml" ]]; then
-        sudo cp -r * /usr/share/sddm/themes/federation-stardate/
-        print_status "Federation theme files installed"
-    else
-        print_warning "Theme files not found, creating fallback theme"
-        create_fallback_theme_files
-    fi
-    
-    # Clean up
-    cd ~
-    rm -rf "$TEMP_DIR"
-}
+echo "✅ Switched to default SDDM theme"
 
-# Function to create fallback theme if download fails
-create_fallback_theme() {
-    print_info "Creating fallback Federation theme..."
-    
-    # Create Main.qml with Federation theme
-    cat > Main.qml << 'EOF'
+# Create a working Federation theme
+sudo mkdir -p /usr/share/sddm/themes/federation-fixed
+
+# Create a working Main.qml
+sudo tee /usr/share/sddm/themes/federation-fixed/Main.qml > /dev/null << 'EOF'
 import QtQuick 2.0
 import SddmComponents 2.0
 
@@ -126,14 +44,10 @@ Rectangle {
     Connections {
         target: sddm
         onLoginSucceeded: {
-            errorMessage.color = "steelblue"
-            errorMessage.text = textConstants.loginSucceeded
         }
         onLoginFailed: {
             password.selectAll()
             password.focus = true
-            errorMessage.color = "red"
-            errorMessage.text = textConstants.loginFailed
         }
     }
 
@@ -161,7 +75,7 @@ Rectangle {
         }
     }
 
-    // Federation logo text
+    // Federation header
     Text {
         id: welcomeText
         anchors.horizontalCenter: parent.horizontalCenter
@@ -195,24 +109,15 @@ Rectangle {
             font.bold: true
             color: "#ffd60a"
             font.family: "Monospace"
-            
-            function calculateStardate() {
-                var now = new Date();
-                var year = now.getFullYear();
-                var startOfYear = new Date(year, 0, 1);
-                var dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000)) + 1;
-                var fraction = dayOfYear / 365.25;
-                var stardate = ((year - 2323) * 1000 + fraction * 1000).toFixed(1);
-                return "STARDATE: " + stardate;
-            }
-            
-            text: calculateStardate()
-            
-            Timer {
-                interval: 60000 // Update every minute
-                running: true
-                repeat: true
-                onTriggered: parent.text = parent.calculateStardate()
+            text: "STARDATE: " + (((new Date().getFullYear() - 2323) * 1000) + (new Date().getTime() % 31536000000) / 31536000).toFixed(1)
+        }
+
+        Timer {
+            interval: 10000
+            running: true
+            repeat: true
+            onTriggered: {
+                stardateText.text = "STARDATE: " + (((new Date().getFullYear() - 2323) * 1000) + (new Date().getTime() % 31536000000) / 31536000).toFixed(1)
             }
         }
     }
@@ -222,7 +127,7 @@ Rectangle {
         id: loginPanel
         anchors.centerIn: parent
         width: 400
-        height: 280
+        height: 300
         color: "#001122"
         opacity: 0.95
         border.color: "#ffd60a"
@@ -242,18 +147,25 @@ Rectangle {
                 font.family: "Monospace"
             }
 
+            // User selection
             ComboBox {
                 id: users
                 width: 300
+                height: 40
                 model: userModel
-                currentIndex: userModel.lastIndex
+                index: userModel.lastIndex
                 color: "#ffd60a"
                 borderColor: "#ffd60a"
                 textColor: "#ffd60a"
                 menuColor: "#001122"
                 font.pixelSize: 16
+                arrowIcon: "angle-down.png"
+
+                KeyNavigation.backtab: loginButton
+                KeyNavigation.tab: password
             }
 
+            // Password field
             Rectangle {
                 width: 300
                 height: 40
@@ -273,28 +185,39 @@ Rectangle {
 
                     Keys.onPressed: {
                         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                            sddm.login(users.currentText, password.text, session.currentIndex)
+                            sddm.login(users.currentText, password.text, sessions.index)
                         }
                     }
+
+                    KeyNavigation.backtab: users
+                    KeyNavigation.tab: sessions
                 }
             }
 
+            // Session selection
             ComboBox {
-                id: session
+                id: sessions
                 width: 300
+                height: 40
                 model: sessionModel
-                currentIndex: sessionModel.lastIndex
+                index: sessionModel.lastIndex
                 color: "#ffd60a"
                 borderColor: "#ffd60a"
                 textColor: "#ffd60a"
                 menuColor: "#001122"
                 font.pixelSize: 16
+                arrowIcon: "angle-down.png"
+
+                KeyNavigation.backtab: password
+                KeyNavigation.tab: loginButton
             }
 
+            // Login button
             Rectangle {
+                id: loginButton
                 width: 300
                 height: 40
-                color: "#ffd60a"
+                color: loginButtonArea.pressed ? "#cc9900" : "#ffd60a"
                 radius: 5
 
                 Text {
@@ -306,15 +229,25 @@ Rectangle {
                 }
 
                 MouseArea {
+                    id: loginButtonArea
                     anchors.fill: parent
-                    onClicked: sddm.login(users.currentText, password.text, session.currentIndex)
+                    onClicked: sddm.login(users.currentText, password.text, sessions.index)
                 }
+
+                Keys.onPressed: {
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        sddm.login(users.currentText, password.text, sessions.index)
+                    }
+                }
+
+                KeyNavigation.backtab: sessions
+                KeyNavigation.tab: users
             }
         }
     }
 
+    // Time display
     Text {
-        id: errorMessage
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 50
@@ -327,12 +260,14 @@ Rectangle {
     Component.onCompleted: {
         if (password.text === "")
             password.focus = true
+        else
+            loginButton.focus = true
     }
 }
 EOF
 
-    # Create theme.conf
-    cat > theme.conf << 'EOF'
+# Create theme.conf
+sudo tee /usr/share/sddm/themes/federation-fixed/theme.conf > /dev/null << 'EOF'
 [General]
 type=color
 color=#000814
@@ -346,12 +281,12 @@ ShowBatteryWhenLow=true
 ShowUserRealNameFallback=true
 EOF
 
-    # Create metadata.desktop
-    cat > metadata.desktop << 'EOF'
+# Create metadata.desktop
+sudo tee /usr/share/sddm/themes/federation-fixed/metadata.desktop > /dev/null << 'EOF'
 [SddmGreeterTheme]
-Name=Federation Stardate
-Description=Star Trek Federation themed login with Stardate
-Author=Federation Theme
+Name=Federation Fixed
+Description=Fixed Federation themed login with Stardate
+Author=ML4W Fixed
 License=GPL
 Version=1.0
 Website=
@@ -359,37 +294,22 @@ Screenshot=
 MainScript=Main.qml
 ConfigFile=theme.conf
 EOF
-}
 
-# Function to create fallback theme files directly
-create_fallback_theme_files() {
-    cd /tmp
-    create_fallback_theme
-    sudo cp -r * /usr/share/sddm/themes/federation-stardate/
-    print_status "Fallback Federation theme created"
-}
-
-# Function to configure SDDM
-configure_sddm() {
-    echo "⚙️  Configuring SDDM with Federation theme..."
-    
-    # Create SDDM configuration
-    sudo tee /etc/sddm.conf > /dev/null << 'EOF'
+# Update SDDM config to use fixed theme
+sudo tee /etc/sddm.conf > /dev/null << 'EOF'
 [General]
 HaltCommand=/usr/bin/systemctl poweroff
 RebootCommand=/usr/bin/systemctl reboot
 Numlock=off
 
 [Theme]
-Current=federation-stardate
+Current=federation-fixed
 CursorTheme=breeze_cursors
 ThemeDir=/usr/share/sddm/themes
 
 [Users]
 RememberLastSession=true
 RememberLastUser=true
-MaximumUid=60000
-MinimumUid=1000
 
 [Wayland]
 SessionDir=/usr/share/wayland-sessions
@@ -398,152 +318,14 @@ SessionDir=/usr/share/wayland-sessions
 SessionDir=/usr/share/xsessions
 EOF
 
-    print_status "SDDM configured with Federation theme"
-}
+echo "✅ Fixed Federation theme created and applied"
 
-# Function to fix NumLock for Hyprland
-fix_numlock_for_hyprland() {
-    echo "🔢 Fixing NumLock configuration..."
-    
-    # SDDM NumLock configuration (already in main config above)
-    
-    # Hyprland NumLock fix
-    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
-        # Remove existing NumLock lines
-        sed -i '/numlock/d' "$HOME/.config/hypr/hyprland.conf"
-        sed -i '/numlockx/d' "$HOME/.config/hypr/hyprland.conf"
-        
-        # Add proper NumLock configuration
-        echo "" >> "$HOME/.config/hypr/hyprland.conf"
-        echo "# NumLock Configuration - Keep OFF" >> "$HOME/.config/hypr/hyprland.conf"
-        echo "exec-once = numlockx off" >> "$HOME/.config/hypr/hyprland.conf"
-        
-        print_status "NumLock fix applied to Hyprland"
-    else
-        print_warning "Hyprland config not found"
-    fi
-    
-    # Install numlockx if needed
-    if ! command -v numlockx &> /dev/null; then
-        if command -v pacman &> /dev/null; then
-            sudo pacman -S --needed --noconfirm numlockx
-        elif command -v apt &> /dev/null; then
-            sudo apt install -y numlockx
-        fi
-        print_status "numlockx installed"
-    fi
-}
+# Restart SDDM
+sudo systemctl restart sddm
 
-# Function to create Hyprland desktop entry
-create_hyprland_entry() {
-    echo "🖥️  Creating Hyprland session entry..."
-    
-    sudo mkdir -p /usr/share/wayland-sessions
-    
-    sudo tee /usr/share/wayland-sessions/hyprland.desktop > /dev/null << 'EOF'
-[Desktop Entry]
-Name=Hyprland
-Comment=An intelligent dynamic tiling Wayland compositor
-Exec=Hyprland
-Type=Application
-DesktopNames=Hyprland
-X-LightDM-DesktopName=Hyprland
-EOF
-    
-    print_status "Hyprland session entry created"
-}
-
-# Function to test theme
-test_theme() {
-    echo "🧪 Testing Federation theme..."
-    
-    if [[ -d "/usr/share/sddm/themes/federation-stardate" ]]; then
-        print_status "Theme files installed correctly"
-        
-        # Test if we can run theme preview
-        if command -v sddm-greeter &> /dev/null; then
-            print_info "You can test the theme with:"
-            echo "  sddm-greeter --test-mode --theme /usr/share/sddm/themes/federation-stardate"
-        fi
-    else
-        print_error "Theme installation failed"
-        return 1
-    fi
-}
-
-# Function to enable SDDM
-enable_sddm() {
-    echo "🔧 Enabling SDDM service..."
-    
-    # Disable other display managers
-    sudo systemctl disable gdm lightdm lxdm 2>/dev/null || true
-    
-    # Enable SDDM
-    sudo systemctl enable sddm
-    
-    print_status "SDDM service enabled"
-}
-
-# Function to show completion message
-show_completion() {
-    echo ""
-    echo "🎉 Federation Login with Stardate Installation Complete!"
-    echo "======================================================="
-    echo ""
-    print_status "What was installed:"
-    echo "  • Federation SDDM theme with real Stardate calculation"
-    echo "  • SDDM configuration with NumLock disabled"
-    echo "  • Hyprland session entry for SDDM"
-    echo "  • NumLock fix for Hyprland startup"
-    echo ""
-    print_info "Features of your new login screen:"
-    echo "  • Real-time Stardate display (TNG era)"
-    echo "  • Federation blue gradient background"
-    echo "  • Animated star field"
-    echo "  • Starfleet computer interface styling"
-    echo "  • NumLock stays OFF as requested"
-    echo ""
-    print_info "Next steps:"
-    echo "  1. Reboot your system: sudo reboot"
-    echo "  2. You'll see the Federation login screen"
-    echo "  3. Select 'Hyprland' from the session menu"
-    echo "  4. Enter your password and click 'ENGAGE'"
-    echo ""
-    print_info "Test the theme before rebooting:"
-    echo "  sddm-greeter --test-mode --theme /usr/share/sddm/themes/federation-stardate"
-    echo ""
-    
-    if [[ -f "/tmp/sddm_backup_location" ]]; then
-        BACKUP_LOC=$(cat /tmp/sddm_backup_location)
-        print_info "Backup of old config saved at: $BACKUP_LOC"
-        rm -f /tmp/sddm_backup_location
-    fi
-    
-    print_warning "If you encounter issues:"
-    echo "  • Press Ctrl+Alt+F3 to access TTY"
-    echo "  • Restore backup: sudo cp $BACKUP_LOC/sddm.conf /etc/sddm.conf"
-    echo "  • Switch theme: sudo nano /etc/sddm.conf (change Current= line)"
-}
-
-# Main execution
-main() {
-    check_root
-    
-    echo "🚀 Starting Federation Login with Stardate installation..."
-    echo ""
-    
-    backup_sddm_config
-    install_requirements
-    install_federation_theme
-    configure_sddm
-    fix_numlock_for_hyprland
-    create_hyprland_entry
-    test_theme
-    enable_sddm
-    show_completion
-    
-    echo "✅ Installation completed! Ready to reboot and enjoy your Federation login experience!"
-}
-
-# Run main function
-main "$@"
+echo "🎉 Federation theme should now work without errors!"
+echo "🚀 The login screen will show:"
+echo "  • Federation styling with blue gradient"
+echo "  • Real-time Stardate display"
+echo "  • ENGAGE button for login"
+echo "  • NumLock stays OFF"

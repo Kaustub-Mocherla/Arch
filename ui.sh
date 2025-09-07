@@ -1,29 +1,22 @@
 #!/bin/bash
 
-# Update system package database
+# Update system packages
 sudo pacman -Syu --noconfirm
 
-# Install required base-devel and git packages if not already installed
-sudo pacman -S --needed base-devel git --noconfirm
+# Install required network manager packages
+sudo pacman -S --needed networkmanager network-manager-applet nm-connection-editor --noconfirm
 
-# Install yay (AUR helper) if not installed
-if ! command -v yay &> /dev/null
-then
-  git clone https://aur.archlinux.org/yay-git.git
-  cd yay-git
-  makepkg -si --noconfirm
-  cd ..
-  rm -rf yay-git
-fi
+# Enable and start NetworkManager
+sudo systemctl enable --now NetworkManager
 
-# Use yay to install Google Chrome
-yay -S --noconfirm google-chrome
+# Kill existing nm-applet and waybar processes if any
+killall nm-applet waybar 2>/dev/null
 
-# Use yay to install GitHub Desktop
-yay -S --noconfirm github-desktop-bin
+# Start nm-applet with indicator
+nm-applet --indicator &
 
-# Use yay to install Visual Studio Code
-yay -S --noconfirm visual-studio-code-bin
+# Restart waybar
+waybar &
 
-# Optionally install yt-dlp for Youtube video downloading
-sudo pacman -S --noconfirm yt-dlp
+# Notify user
+echo "Network manager applet and waybar restarted. Click the network icon to see popup."

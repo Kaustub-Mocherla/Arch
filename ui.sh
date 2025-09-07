@@ -1,36 +1,29 @@
 #!/bin/bash
-# Emergency SDDM Fix - Restore Working Login
 
-echo "🚨 Emergency SDDM Recovery"
+# Update system package database
+sudo pacman -Syu --noconfirm
 
-# Switch to a working default theme
-sudo tee /etc/sddm.conf > /dev/null << 'EOF'
-[General]
-HaltCommand=/usr/bin/systemctl poweroff
-RebootCommand=/usr/bin/systemctl reboot
-Numlock=off
+# Install required base-devel and git packages if not already installed
+sudo pacman -S --needed base-devel git --noconfirm
 
-[Theme]
-Current=breeze
+# Install yay (AUR helper) if not installed
+if ! command -v yay &> /dev/null
+then
+  git clone https://aur.archlinux.org/yay-git.git
+  cd yay-git
+  makepkg -si --noconfirm
+  cd ..
+  rm -rf yay-git
+fi
 
-[Users]
-RememberLastSession=true
-RememberLastUser=true
-MaximumUid=60000
-MinimumUid=1000
+# Use yay to install Google Chrome
+yay -S --noconfirm google-chrome
 
-[Wayland]
-SessionDir=/usr/share/wayland-sessions
+# Use yay to install GitHub Desktop
+yay -S --noconfirm github-desktop-bin
 
-[X11]
-SessionDir=/usr/share/xsessions
-EOF
+# Use yay to install Visual Studio Code
+yay -S --noconfirm visual-studio-code-bin
 
-# Remove problematic theme files
-sudo rm -rf /usr/share/sddm/themes/federation-*
-
-# Restart SDDM
-sudo systemctl restart sddm
-
-echo "✅ SDDM restored to working Breeze theme"
-echo "🔄 You should now be able to login normally"
+# Optionally install yt-dlp for Youtube video downloading
+sudo pacman -S --noconfirm yt-dlp

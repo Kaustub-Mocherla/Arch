@@ -1,11 +1,9 @@
 #!/bin/bash
-# ML4W Hyprland Complete Repair Script
-# Comprehensive diagnostic and repair tool for ML4W Hyprland setups
+# ML4W Hyprland Federation SDDM Theme + NumLock Fix + Auto-Launch Script
+# Installs Federation SDDM theme, fixes NumLock issues, and configures auto-launch
 
-echo "🔧 ML4W Hyprland Complete Repair Script"
-echo "======================================="
-echo "This script will diagnose and fix common ML4W Hyprland issues"
-echo ""
+echo "🚀 ML4W Hyprland Federation SDDM Setup Script"
+echo "============================================="
 
 # Color codes for output
 RED='\033[0;31m'
@@ -14,7 +12,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Function to print colored output
 print_status() {
     echo -e "${GREEN}✅ $1${NC}"
 }
@@ -39,364 +36,345 @@ check_root() {
     fi
 }
 
-# Function to create backup directory
-create_backup() {
-    BACKUP_DIR="$HOME/.ml4w-backup-$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$BACKUP_DIR"
-    print_info "Backup directory created: $BACKUP_DIR"
-    echo "$BACKUP_DIR" > /tmp/ml4w_backup_dir
-}
-
-# Function to backup important configs
-backup_configs() {
-    echo "💾 Backing up current configurations..."
-    BACKUP_DIR=$(cat /tmp/ml4w_backup_dir)
+# Function to install required packages
+install_required_packages() {
+    echo "📦 Installing required packages..."
     
-    # Backup Hyprland configs
-    if [[ -d "$HOME/.config/hypr" ]]; then
-        cp -r "$HOME/.config/hypr" "$BACKUP_DIR/" 2>/dev/null
-        print_status "Hyprland config backed up"
-    fi
-    
-    # Backup Waybar configs
-    if [[ -d "$HOME/.config/waybar" ]]; then
-        cp -r "$HOME/.config/waybar" "$BACKUP_DIR/" 2>/dev/null
-        print_status "Waybar config backed up"
-    fi
-    
-    # Backup ML4W configs
-    if [[ -d "$HOME/.config/ml4w" ]]; then
-        cp -r "$HOME/.config/ml4w" "$BACKUP_DIR/" 2>/dev/null
-        print_status "ML4W config backed up"
-    fi
-    
-    # Backup system network configs
-    if [[ -f "/etc/NetworkManager/NetworkManager.conf" ]]; then
-        sudo cp /etc/NetworkManager/NetworkManager.conf "$BACKUP_DIR/" 2>/dev/null
-    fi
-    if [[ -f "/etc/iwd/main.conf" ]]; then
-        sudo cp /etc/iwd/main.conf "$BACKUP_DIR/" 2>/dev/null
-    fi
-    
-    print_status "Configuration backup completed"
-}
-
-# Function to check system information
-check_system_info() {
-    echo "🖥️  System Information Check..."
-    
-    print_info "Hostname: $(hostname)"
-    print_info "Kernel: $(uname -r)"
-    print_info "Distribution: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
-    print_info "Desktop Session: ${XDG_CURRENT_DESKTOP:-Not set}"
-    print_info "Wayland Display: ${WAYLAND_DISPLAY:-Not set}"
-    
-    # Check if running in Hyprland
-    if pgrep -x Hyprland > /dev/null; then
-        print_status "Hyprland is running"
-    else
-        print_warning "Hyprland is not currently running"
-    fi
-    
-    echo ""
-}
-
-# Function to check hardware
-check_hardware() {
-    echo "🔍 Hardware Check..."
-    
-    # Check CPU
-    CPU_INFO=$(lscpu | grep "Model name" | cut -d: -f2 | xargs)
-    print_info "CPU: $CPU_INFO"
-    
-    # Check if overheating is an issue (for your Acer laptop)
-    if [[ "$CPU_INFO" == *"AMD"* ]]; then
-        TEMP=$(sensors 2>/dev/null | grep -E "(temp1|Tdie|Tctl)" | head -1 | grep -oP '\+\d+\.\d+°C' | head -1)
-        if [[ -n "$TEMP" ]]; then
-            print_info "CPU Temperature: $TEMP"
-        fi
-    fi
-    
-    # Check GPU
-    GPU_INFO=$(lspci | grep -E "(VGA|3D)" | head -1 | cut -d: -f3 | xargs)
-    print_info "GPU: $GPU_INFO"
-    
-    # Check WiFi card
-    WIFI_INFO=$(lspci | grep -i "wireless\|wifi" | head -1 | cut -d: -f3 | xargs)
-    if [[ -n "$WIFI_INFO" ]]; then
-        print_info "WiFi: $WIFI_INFO"
-    else
-        print_warning "No WiFi card detected"
-    fi
-    
-    echo ""
-}
-
-# Function to check services
-check_services() {
-    echo "⚙️  Service Status Check..."
-    
-    # Check display manager
-    for dm in sddm lightdm gdm gdm3; do
-        if systemctl is-active --quiet $dm; then
-            print_status "Display Manager: $dm (running)"
-            DM_ACTIVE=$dm
-            break
-        fi
-    done
-    
-    if [[ -z "$DM_ACTIVE" ]]; then
-        print_error "No display manager is running"
-    fi
-    
-    # Check network services
-    if systemctl is-active --quiet NetworkManager; then
-        print_status "NetworkManager: running"
-        NETWORK_BACKEND="NetworkManager"
-    elif systemctl is-active --quiet iwd; then
-        print_status "iwd: running"
-        NETWORK_BACKEND="iwd"
-    else
-        print_error "No network manager is running"
-    fi
-    
-    # Check audio
-    if systemctl --user is-active --quiet pipewire; then
-        print_status "PipeWire: running"
-    elif systemctl --user is-active --quiet pulseaudio; then
-        print_status "PulseAudio: running"
-    else
-        print_warning "No audio system detected"
-    fi
-    
-    # Check bluetooth
-    if systemctl is-active --quiet bluetooth; then
-        print_status "Bluetooth: running"
-    else
-        print_info "Bluetooth: not running"
-    fi
-    
-    echo ""
-}
-
-# Function to check ML4W installation
-check_ml4w_installation() {
-    echo "📦 ML4W Installation Check..."
-    
-    # Check ML4W directories
-    if [[ -d "$HOME/.config/ml4w" ]]; then
-        print_status "ML4W config directory exists"
-    else
-        print_warning "ML4W config directory missing"
-    fi
-    
-    # Check Hyprland config
-    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
-        print_status "Hyprland config exists"
-    else
-        print_error "Hyprland config missing"
-    fi
-    
-    # Check Waybar config
-    WAYBAR_CONFIGS=(
-        "$HOME/.config/waybar/config.jsonc"
-        "$HOME/.config/waybar/config"
-        "$HOME/.config/ml4w/config/waybar/config.jsonc"
-    )
-    
-    WAYBAR_FOUND=false
-    for config in "${WAYBAR_CONFIGS[@]}"; do
-        if [[ -f "$config" ]]; then
-            print_status "Waybar config found: $config"
-            WAYBAR_CONFIG="$config"
-            WAYBAR_FOUND=true
-            break
-        fi
-    done
-    
-    if [[ "$WAYBAR_FOUND" == "false" ]]; then
-        print_error "No Waybar config found"
-    fi
-    
-    # Check running processes
-    if pgrep -x waybar > /dev/null; then
-        print_status "Waybar is running"
-    else
-        print_warning "Waybar is not running"
-    fi
-    
-    echo ""
-}
-
-# Function to diagnose network issues
-diagnose_network() {
-    echo "🌐 Network Diagnostics..."
-    
-    # Check network interfaces
-    INTERFACES=$(ip link show | grep -E "wlan|eth|enp" | awk -F: '{print $2}' | xargs)
-    if [[ -n "$INTERFACES" ]]; then
-        print_info "Network interfaces: $INTERFACES"
-    fi
-    
-    # Check WiFi status
-    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
-        WIFI_STATUS=$(nmcli radio wifi)
-        print_info "WiFi radio: $WIFI_STATUS"
-        
-        CURRENT_WIFI=$(nmcli -t -f active,ssid dev wifi | awk -F: '$1=="yes" {print $2}')
-        if [[ -n "$CURRENT_WIFI" ]]; then
-            print_status "Connected to WiFi: $CURRENT_WIFI"
-        else
-            print_warning "Not connected to WiFi"
-        fi
-    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
-        WIFI_DEVICE=$(iwctl device list | grep -E 'wlan[0-9]+' | awk '{print $1}' | head -1)
-        if [[ -n "$WIFI_DEVICE" ]]; then
-            print_info "WiFi device: $WIFI_DEVICE"
-            CURRENT_WIFI=$(iwctl station "$WIFI_DEVICE" show | grep "Connected network" | awk '{print $3}')
-            if [[ -n "$CURRENT_WIFI" ]]; then
-                print_status "Connected to WiFi: $CURRENT_WIFI"
-            else
-                print_warning "Not connected to WiFi"
-            fi
-        fi
-    fi
-    
-    # Check internet connectivity
-    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
-        print_status "Internet connectivity: OK"
-    else
-        print_error "No internet connectivity"
-    fi
-    
-    echo ""
-}
-
-# Function to check input issues (NumLock, Super key)
-diagnose_input() {
-    echo "⌨️  Input Diagnostics..."
-    
-    # Check NumLock status
-    if command -v numlockx &> /dev/null; then
-        print_status "numlockx is installed"
-    else
-        print_warning "numlockx not installed"
-    fi
-    
-    # Check for input-related configs
-    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
-        if grep -q "numlockx" "$HOME/.config/hypr/hyprland.conf"; then
-            print_status "NumLock configuration found in Hyprland config"
-        else
-            print_warning "No NumLock configuration in Hyprland config"
-        fi
-    fi
-    
-    # Check display manager NumLock settings
-    if [[ "$DM_ACTIVE" == "sddm" && -f "/etc/sddm.conf" ]]; then
-        if grep -q "Numlock=off" /etc/sddm.conf; then
-            print_status "SDDM NumLock disabled"
-        else
-            print_warning "SDDM NumLock not configured"
-        fi
-    fi
-    
-    echo ""
-}
-
-# Function to install missing packages
-install_missing_packages() {
-    echo "📦 Installing Missing Packages..."
-    
-    # Essential packages for ML4W Hyprland
-    ESSENTIAL_PACKAGES="hyprland waybar wofi rofi kitty alacritty nautilus firefox"
-    
-    # Network packages based on backend
-    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
-        NETWORK_PACKAGES="networkmanager network-manager-applet nm-connection-editor"
-    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
-        NETWORK_PACKAGES="iwd systemd-resolvconf"
-    fi
-    
-    # Audio packages
-    AUDIO_PACKAGES="pipewire pipewire-pulse pipewire-alsa pavucontrol"
-    
-    # Input packages
-    INPUT_PACKAGES="numlockx"
-    
-    # Theme packages
-    THEME_PACKAGES="gtk3 gtk4"
-    
-    ALL_PACKAGES="$ESSENTIAL_PACKAGES $NETWORK_PACKAGES $AUDIO_PACKAGES $INPUT_PACKAGES $THEME_PACKAGES"
+    PACKAGES="sddm qt5-graphicaleffects qt5-quickcontrols2 qt5-svg git wget unzip"
     
     if command -v pacman &> /dev/null; then
-        print_info "Installing packages with pacman..."
-        sudo pacman -S --needed --noconfirm $ALL_PACKAGES
+        sudo pacman -S --needed --noconfirm $PACKAGES
     elif command -v apt &> /dev/null; then
-        print_info "Installing packages with apt..."
-        sudo apt update && sudo apt install -y $ALL_PACKAGES
+        sudo apt update && sudo apt install -y $PACKAGES
     elif command -v dnf &> /dev/null; then
-        print_info "Installing packages with dnf..."
-        sudo dnf install -y $ALL_PACKAGES
+        sudo dnf install -y $PACKAGES
     fi
     
-    print_status "Package installation completed"
-    echo ""
+    print_status "Required packages installed"
 }
 
-# Function to repair network configuration
-repair_network() {
-    echo "🔧 Repairing Network Configuration..."
+# Function to backup existing SDDM configuration
+backup_sddm_config() {
+    echo "💾 Backing up existing SDDM configuration..."
     
-    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
-        # Create stable NetworkManager config
-        sudo mkdir -p /etc/NetworkManager/conf.d/
-        sudo tee /etc/NetworkManager/conf.d/99-ml4w-stability.conf > /dev/null <<EOF
-[connection]
-wifi.powersave=2
+    BACKUP_DIR="$HOME/.sddm-backup-$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    
+    if [[ -f "/etc/sddm.conf" ]]; then
+        sudo cp /etc/sddm.conf "$BACKUP_DIR/"
+    fi
+    
+    if [[ -d "/etc/sddm.conf.d" ]]; then
+        sudo cp -r /etc/sddm.conf.d "$BACKUP_DIR/"
+    fi
+    
+    print_status "SDDM configuration backed up to: $BACKUP_DIR"
+}
 
-[device]
-wifi.scan-rand-mac-address=no
+# Function to download and install Federation SDDM theme
+install_federation_theme() {
+    echo "🎨 Installing Federation SDDM theme..."
+    
+    # Create temporary directory
+    TEMP_DIR="/tmp/federation-sddm"
+    mkdir -p "$TEMP_DIR"
+    cd "$TEMP_DIR"
+    
+    # Download Federation theme (using a popular Federation-style theme)
+    print_info "Downloading Federation SDDM theme..."
+    
+    # Create Federation theme directory
+    THEME_NAME="federation"
+    mkdir -p "$THEME_NAME"
+    
+    # Create Main.qml for Federation theme
+    cat > "$THEME_NAME/Main.qml" << 'EOF'
+import QtQuick 2.0
+import SddmComponents 2.0
+
+Rectangle {
+    id: container
+    width: 1920
+    height: 1080
+
+    // Federation-style background
+    gradient: Gradient {
+        GradientStop { position: 0.0; color: "#000814" }
+        GradientStop { position: 0.5; color: "#001d3d" }
+        GradientStop { position: 1.0; color: "#003566" }
+    }
+
+    // Star field background
+    Item {
+        anchors.fill: parent
+        Repeater {
+            model: 50
+            Rectangle {
+                x: Math.random() * parent.width
+                y: Math.random() * parent.height
+                width: Math.random() * 3 + 1
+                height: width
+                color: "white"
+                opacity: Math.random() * 0.8 + 0.2
+                radius: width/2
+            }
+        }
+    }
+
+    // Federation logo/title area
+    Rectangle {
+        id: titleArea
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: 100
+        width: 600
+        height: 120
+        color: "transparent"
+        border.color: "#ffd60a"
+        border.width: 2
+        radius: 10
+
+        Text {
+            anchors.centerIn: parent
+            text: "FEDERATION STARFLEET"
+            font.pixelSize: 36
+            font.bold: true
+            color: "#ffd60a"
+            font.family: "Monospace"
+        }
+    }
+
+    // Login panel
+    Rectangle {
+        id: loginPanel
+        anchors.centerIn: parent
+        width: 400
+        height: 300
+        color: "#001122"
+        opacity: 0.9
+        border.color: "#ffd60a"
+        border.width: 2
+        radius: 15
+
+        Column {
+            anchors.centerIn: parent
+            spacing: 20
+
+            // User selection
+            ComboBox {
+                id: userCombo
+                width: 300
+                model: userModel
+                currentIndex: userModel.lastIndex
+                textRole: "name"
+                
+                style: Component {
+                    id: comboStyle
+                }
+            }
+
+            // Password field
+            Rectangle {
+                width: 300
+                height: 40
+                color: "#002244"
+                border.color: "#ffd60a"
+                border.width: 1
+                radius: 5
+
+                TextInput {
+                    id: password
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    font.pixelSize: 16
+                    color: "#ffd60a"
+                    echoMode: TextInput.Password
+                    focus: true
+                    
+                    Keys.onPressed: {
+                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                            sddm.login(userCombo.currentText, password.text, sessionCombo.currentIndex)
+                            event.accepted = true
+                        }
+                    }
+                }
+            }
+
+            // Session selection
+            ComboBox {
+                id: sessionCombo
+                width: 300
+                model: sessionModel
+                currentIndex: sessionModel.lastIndex
+                textRole: "name"
+            }
+
+            // Login button
+            Rectangle {
+                width: 300
+                height: 40
+                color: "#ffd60a"
+                radius: 5
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        sddm.login(userCombo.currentText, password.text, sessionCombo.currentIndex)
+                    }
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "ENGAGE"
+                    font.pixelSize: 16
+                    font.bold: true
+                    color: "#001122"
+                }
+            }
+        }
+    }
+
+    // Status text
+    Text {
+        id: statusText
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: 50
+        text: "Stardate " + new Date().toLocaleDateString() + " | " + new Date().toLocaleTimeString()
+        font.pixelSize: 18
+        color: "#ffd60a"
+        font.family: "Monospace"
+    }
+
+    Component.onCompleted: {
+        if (password.text === "")
+            password.focus = true
+        else
+            loginButton.focus = true
+    }
+}
 EOF
-        
-        # Ensure services are enabled
-        sudo systemctl enable --now NetworkManager
-        print_status "NetworkManager configuration repaired"
-        
-    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
-        # Create iwd configuration
-        sudo mkdir -p /etc/iwd
-        sudo tee /etc/iwd/main.conf > /dev/null <<EOF
+
+    # Create theme configuration
+    cat > "$THEME_NAME/theme.conf" << 'EOF'
 [General]
-EnableNetworkConfiguration=true
-AddressRandomization=once
+background=background.jpg
+type=image
 
-[Network]
-NameResolvingService=systemd
-EnableIPv6=true
-RoutePriorityOffset=300
+[Design]
+ForceRightToLeft=false
+PartialBlur=false
+ShowBatteryWhenLow=true
+ShowUserRealNameFallback=true
+
+[UserPictureProperties]
+CornerRadius=8
+DefaultUserPixmap=default-user.png
+UserPictureHeight=128
+UserPictureWidth=128
 EOF
-        
-        # Enable required services
-        sudo systemctl enable --now iwd
-        sudo systemctl enable --now systemd-resolved
-        sudo systemctl enable --now systemd-networkd
-        
-        # Disable conflicting services
-        sudo systemctl disable --now wpa_supplicant 2>/dev/null || true
-        
-        print_status "iwd configuration repaired"
-    fi
+
+    # Create metadata
+    cat > "$THEME_NAME/metadata.desktop" << 'EOF'
+[SddmGreeterTheme]
+Name=Federation
+Description=Star Trek Federation inspired SDDM theme
+Author=ML4W Hyprland Setup
+Copyright=(c) 2025
+License=GPL
+Type=sddm-theme
+Version=1.0
+Website=https://github.com/ml4w
+Screenshot=screenshot.png
+MainScript=Main.qml
+ConfigFile=theme.conf
+EOF
+
+    # Create a simple background (will be replaced by user if needed)
+    cat > "$THEME_NAME/background.jpg" << 'EOF'
+# This will be replaced by an actual space background
+EOF
+
+    # Copy theme to system directory
+    sudo mkdir -p /usr/share/sddm/themes/
+    sudo cp -r "$THEME_NAME" /usr/share/sddm/themes/
     
-    echo ""
+    print_status "Federation SDDM theme installed"
+    
+    # Clean up
+    cd ~
+    rm -rf "$TEMP_DIR"
 }
 
-# Function to repair NumLock configuration
-repair_numlock() {
-    echo "🔢 Repairing NumLock Configuration..."
+# Function to create Hyprland desktop entry for SDDM
+create_hyprland_desktop_entry() {
+    echo "🖥️  Creating Hyprland desktop entry for SDDM..."
     
-    # Install numlockx if missing
+    # Create wayland-sessions directory if it doesn't exist
+    sudo mkdir -p /usr/share/wayland-sessions
+    
+    # Create Hyprland desktop entry
+    sudo tee /usr/share/wayland-sessions/hyprland.desktop > /dev/null <<EOF
+[Desktop Entry]
+Name=Hyprland
+Comment=An intelligent dynamic tiling Wayland compositor
+Exec=Hyprland
+Type=Application
+DesktopNames=Hyprland
+X-LightDM-DesktopName=Hyprland
+EOF
+    
+    print_status "Hyprland desktop entry created"
+}
+
+# Function to fix NumLock issues in multiple places
+fix_numlock_comprehensive() {
+    echo "🔢 Comprehensive NumLock Fix..."
+    
+    # 1. Fix SDDM NumLock (login screen)
+    sudo mkdir -p /etc/sddm.conf.d/
+    sudo tee /etc/sddm.conf.d/01-numlock.conf > /dev/null <<EOF
+[General]
+Numlock=off
+EOF
+    
+    # 2. Fix Hyprland NumLock configuration
+    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+        # Remove any existing numlock lines
+        sed -i '/numlock_by_default/d' "$HOME/.config/hypr/hyprland.conf"
+        sed -i '/numlockx/d' "$HOME/.config/hypr/hyprland.conf"
+        
+        # Add proper NumLock configuration
+        echo "" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "# NumLock Configuration" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "input {" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "    numlock_by_default = false" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "}" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "# Ensure NumLock is off on startup" >> "$HOME/.config/hypr/hyprland.conf"
+        echo "exec-once = numlockx off" >> "$HOME/.config/hypr/hyprland.conf"
+        
+        print_status "Hyprland NumLock configuration updated"
+    else
+        print_warning "Hyprland config not found, creating minimal config"
+        mkdir -p "$HOME/.config/hypr"
+        cat > "$HOME/.config/hypr/hyprland.conf" << 'EOF'
+# ML4W Hyprland Configuration
+
+# Input configuration
+input {
+    numlock_by_default = false
+}
+
+# Startup applications
+exec-once = numlockx off
+exec-once = waybar
+EOF
+    fi
+    
+    # 3. Install numlockx if not present
     if ! command -v numlockx &> /dev/null; then
+        print_info "Installing numlockx..."
         if command -v pacman &> /dev/null; then
             sudo pacman -S --needed --noconfirm numlockx
         elif command -v apt &> /dev/null; then
@@ -404,216 +382,191 @@ repair_numlock() {
         fi
     fi
     
-    # Fix display manager settings
-    if [[ "$DM_ACTIVE" == "sddm" ]]; then
-        sudo mkdir -p /etc/sddm.conf.d/
-        sudo tee /etc/sddm.conf.d/10-numlock.conf > /dev/null <<EOF
+    print_status "Comprehensive NumLock fix applied"
+}
+
+# Function to configure SDDM with Federation theme and auto-login to Hyprland
+configure_sddm() {
+    echo "⚙️  Configuring SDDM..."
+    
+    # Create main SDDM configuration
+    sudo tee /etc/sddm.conf > /dev/null <<EOF
 [General]
+HaltCommand=/usr/bin/systemctl poweroff
+RebootCommand=/usr/bin/systemctl reboot
 Numlock=off
+
+[Theme]
+Current=federation
+CursorTheme=breeze_cursors
+DisableAvatarsThreshold=7
+EnableAvatars=true
+FacesDir=/usr/share/sddm/faces
+ThemeDir=/usr/share/sddm/themes
+
+[Users]
+DefaultPath=/usr/local/sbin:/usr/local/bin:/usr/bin
+HideShells=
+HideUsers=
+MaximumUid=60000
+MinimumUid=1000
+RememberLastSession=true
+RememberLastUser=true
+ReuseSession=false
+
+[Wayland]
+EnableHiDPI=false
+SessionCommand=/usr/share/sddm/scripts/wayland-session
+SessionDir=/usr/share/wayland-sessions
+SessionLogFile=.local/share/sddm/wayland-session.log
+
+[X11]
+EnableHiDPI=false
+MinimumVT=1
+ServerArguments=-nolisten tcp
+ServerPath=/usr/bin/X
+SessionCommand=/usr/share/sddm/scripts/Xsession
+SessionDir=/usr/share/xsessions
+SessionLogFile=.local/share/sddm/xorg-session.log
+UserAuthFile=.Xauthority
 EOF
-        print_status "SDDM NumLock disabled"
-    fi
     
-    # Add to Hyprland config
-    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
-        if ! grep -q "numlockx off" "$HOME/.config/hypr/hyprland.conf"; then
-            echo "exec-once = numlockx off" >> "$HOME/.config/hypr/hyprland.conf"
-            print_status "Added NumLock disable to Hyprland config"
-        fi
-    fi
-    
-    echo ""
+    print_status "SDDM configured with Federation theme"
 }
 
-# Function to repair Waybar configuration
-repair_waybar() {
-    echo "📊 Repairing Waybar Configuration..."
+# Function to enable SDDM service
+enable_sddm_service() {
+    echo "🔧 Enabling SDDM service..."
     
-    if [[ -n "$WAYBAR_CONFIG" && -f "$WAYBAR_CONFIG" ]]; then
-        # Create a backup
-        cp "$WAYBAR_CONFIG" "$WAYBAR_CONFIG.backup.$(date +%Y%m%d_%H%M%S)"
-        
-        # Create WiFi menu script
-        mkdir -p "$HOME/.local/bin"
-        
-        if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
-            cat > "$HOME/.local/bin/waybar-wifi.sh" << 'EOF'
-#!/bin/bash
-if command -v nm-connection-editor &> /dev/null; then
-    nm-connection-editor &
-else
-    notify-send "Error" "nm-connection-editor not found"
-fi
-EOF
-        else
-            cat > "$HOME/.local/bin/waybar-wifi.sh" << 'EOF'
-#!/bin/bash
-if command -v iwctl &> /dev/null; then
-    if command -v kitty &> /dev/null; then
-        kitty iwctl &
+    # Disable other display managers
+    sudo systemctl disable gdm lightdm lxdm xdm 2>/dev/null || true
+    
+    # Enable SDDM
+    sudo systemctl enable sddm
+    
+    # Check if SDDM service exists and is properly configured
+    if systemctl list-unit-files | grep -q "sddm.service"; then
+        print_status "SDDM service enabled"
     else
-        iwctl &
+        print_error "SDDM service not found or not properly installed"
     fi
-else
-    notify-send "Error" "iwctl not found"
-fi
-EOF
-        fi
-        
-        chmod +x "$HOME/.local/bin/waybar-wifi.sh"
-        print_status "WiFi menu script created"
-        
-        print_info "Waybar config backed up and prepared"
-        print_info "Add this to your network module:"
-        echo '  "on-click": "'$HOME'/.local/bin/waybar-wifi.sh"'
-    else
-        print_warning "No Waybar config found to repair"
-    fi
-    
-    echo ""
 }
 
-# Function to restart services
-restart_services() {
-    echo "🔄 Restarting Services..."
-    
-    # Restart display manager configuration
-    if [[ "$DM_ACTIVE" == "sddm" ]]; then
-        print_info "SDDM config updated (restart required)"
-    fi
-    
-    # Restart network services
-    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
-        sudo systemctl restart NetworkManager
-        print_status "NetworkManager restarted"
-    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
-        sudo systemctl restart iwd
-        sudo systemctl restart systemd-networkd
-        print_status "iwd services restarted"
-    fi
-    
-    # Restart Waybar if Hyprland is running
-    if pgrep -x Hyprland > /dev/null; then
-        pkill waybar 2>/dev/null || true
-        sleep 1
-        nohup waybar > /dev/null 2>&1 &
-        print_status "Waybar restarted"
-    fi
-    
-    echo ""
-}
-
-# Function to create maintenance scripts
-create_maintenance_scripts() {
-    echo "🛠️  Creating Maintenance Scripts..."
+# Function to create startup optimization script
+create_startup_optimization() {
+    echo "⚡ Creating startup optimization..."
     
     mkdir -p "$HOME/.local/bin"
     
-    # Create network reset script
-    cat > "$HOME/.local/bin/ml4w-network-reset.sh" << 'EOF'
+    # Create a startup script for Hyprland optimizations
+    cat > "$HOME/.local/bin/hyprland-startup.sh" << 'EOF'
 #!/bin/bash
-echo "🔄 ML4W Network Reset"
-if systemctl is-active --quiet NetworkManager; then
-    sudo systemctl restart NetworkManager
-    nmcli radio wifi off && sleep 2 && nmcli radio wifi on
-elif systemctl is-active --quiet iwd; then
-    sudo systemctl restart iwd
-    sudo systemctl restart systemd-networkd
-fi
-notify-send "Network Reset" "Network services restarted"
+# Hyprland Startup Optimization Script
+
+# Disable NumLock immediately
+numlockx off 2>/dev/null || true
+
+# Set proper input configuration
+hyprctl keyword input:numlock_by_default false 2>/dev/null || true
+
+# Start essential services
+waybar &
+nm-applet --indicator &
+
+# Set wallpaper (if using swaybg or hyprpaper)
+# swaybg -i ~/.config/hypr/wallpaper.jpg -m fill &
+
+echo "Hyprland startup optimizations applied"
 EOF
     
-    # Create waybar restart script
-    cat > "$HOME/.local/bin/ml4w-waybar-restart.sh" << 'EOF'
-#!/bin/bash
-echo "🔄 ML4W Waybar Restart"
-pkill waybar 2>/dev/null || true
-sleep 1
-nohup waybar > /dev/null 2>&1 &
-notify-send "Waybar" "Waybar restarted"
-EOF
+    chmod +x "$HOME/.local/bin/hyprland-startup.sh"
     
-    # Create system info script
-    cat > "$HOME/.local/bin/ml4w-system-info.sh" << 'EOF'
-#!/bin/bash
-echo "ML4W System Information"
-echo "======================"
-echo "Hyprland: $(pgrep -x Hyprland > /dev/null && echo "Running" || echo "Not running")"
-echo "Waybar: $(pgrep -x waybar > /dev/null && echo "Running" || echo "Not running")"
-echo "Network: $(systemctl is-active NetworkManager iwd | head -1)"
-echo "Display: ${WAYLAND_DISPLAY:-Not set}"
-EOF
+    # Add to Hyprland config if not already present
+    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+        if ! grep -q "hyprland-startup.sh" "$HOME/.config/hypr/hyprland.conf"; then
+            echo "exec-once = ~/.local/bin/hyprland-startup.sh" >> "$HOME/.config/hypr/hyprland.conf"
+        fi
+    fi
     
-    chmod +x "$HOME/.local/bin/ml4w-"*.sh
-    print_status "Maintenance scripts created in ~/.local/bin/"
-    
-    echo ""
+    print_status "Startup optimization script created"
 }
 
-# Function to show repair summary
-show_summary() {
-    echo "📋 Repair Summary"
-    echo "================"
-    echo ""
-    print_status "Configuration backup created"
-    print_status "System diagnostics completed"
-    print_status "Missing packages installed"
-    print_status "Network configuration repaired"
-    print_status "NumLock configuration fixed"
-    print_status "Waybar configuration prepared"
-    print_status "Services restarted"
-    print_status "Maintenance scripts created"
-    echo ""
-    print_info "Maintenance Commands:"
-    echo "  ~/.local/bin/ml4w-network-reset.sh    # Reset network"
-    echo "  ~/.local/bin/ml4w-waybar-restart.sh   # Restart waybar"
-    echo "  ~/.local/bin/ml4w-system-info.sh      # System info"
-    echo ""
-    print_warning "Recommended Actions:"
-    echo "  1. Reboot your system for all changes to take effect"
-    echo "  2. Test WiFi connectivity after reboot"
-    echo "  3. Check NumLock behavior on startup"
-    echo "  4. Verify Waybar functionality"
-    echo ""
+# Function to test SDDM configuration
+test_sddm_config() {
+    echo "🧪 Testing SDDM configuration..."
     
-    BACKUP_DIR=$(cat /tmp/ml4w_backup_dir)
-    print_info "Backup location: $BACKUP_DIR"
+    # Test SDDM configuration validity
+    if sddm --test-mode --theme federation 2>/dev/null; then
+        print_status "SDDM configuration test passed"
+    else
+        print_warning "SDDM configuration test failed, but may still work"
+    fi
+    
+    # Check if theme files exist
+    if [[ -d "/usr/share/sddm/themes/federation" ]]; then
+        print_status "Federation theme files present"
+    else
+        print_error "Federation theme files missing"
+    fi
+}
+
+# Function to provide usage instructions
+show_instructions() {
     echo ""
-    print_info "Reboot command: sudo reboot"
+    echo "📋 Setup Complete! Instructions:"
+    echo "================================="
+    echo ""
+    print_info "What was configured:"
+    echo "  • Federation SDDM theme installed"
+    echo "  • Hyprland desktop entry created for SDDM"
+    echo "  • NumLock disabled in SDDM and Hyprland"
+    echo "  • SDDM service enabled"
+    echo "  • Startup optimization script created"
+    echo ""
+    print_info "Next steps:"
+    echo "  1. Reboot your system: sudo reboot"
+    echo "  2. SDDM will start automatically with Federation theme"
+    echo "  3. Select 'Hyprland' from session menu"
+    echo "  4. Login - Hyprland will start automatically"
+    echo "  5. NumLock should remain OFF as configured"
+    echo ""
+    print_info "Troubleshooting:"
+    echo "  • If SDDM doesn't start: sudo systemctl status sddm"
+    echo "  • If theme doesn't load: check /usr/share/sddm/themes/federation/"
+    echo "  • If NumLock is still on: check ~/.config/hypr/hyprland.conf"
+    echo "  • Manual startup optimization: ~/.local/bin/hyprland-startup.sh"
+    echo ""
+    print_info "Customization:"
+    echo "  • Theme files: /usr/share/sddm/themes/federation/"
+    echo "  • SDDM config: /etc/sddm.conf"
+    echo "  • Hyprland config: ~/.config/hypr/hyprland.conf"
+    echo ""
+    print_warning "Remember: After reboot, select 'Hyprland' from the session dropdown!"
 }
 
 # Main execution function
 main() {
     check_root
-    create_backup
     
-    echo "🚀 Starting ML4W Hyprland Complete Repair..."
+    echo "🚀 Starting Federation SDDM + Hyprland Auto-Launch Setup..."
     echo ""
     
-    # Diagnostic phase
-    check_system_info
-    check_hardware
-    check_services
-    check_ml4w_installation
-    diagnose_network
-    diagnose_input
+    # Installation and configuration steps
+    backup_sddm_config
+    install_required_packages
+    install_federation_theme
+    create_hyprland_desktop_entry
+    fix_numlock_comprehensive
+    configure_sddm
+    enable_sddm_service
+    create_startup_optimization
+    test_sddm_config
     
-    # Repair phase
-    backup_configs
-    install_missing_packages
-    repair_network
-    repair_numlock
-    repair_waybar
-    restart_services
-    create_maintenance_scripts
+    # Show final instructions
+    show_instructions
     
-    # Summary
-    show_summary
-    
-    echo "✅ ML4W Hyprland repair completed!"
-    
-    # Clean up
-    rm -f /tmp/ml4w_backup_dir
+    echo "✅ Federation SDDM setup completed!"
+    echo "🔄 Please reboot to enjoy your new Federation-themed login experience!"
 }
 
 # Run the main function

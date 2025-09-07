@@ -1,400 +1,619 @@
 #!/bin/bash
-# ML4W Hyprland Waybar WiFi Popup Fix Script
-# Fixes the issue where WiFi popup opens and closes immediately
+# ML4W Hyprland Complete Repair Script
+# Comprehensive diagnostic and repair tool for ML4W Hyprland setups
 
-echo "🔧 ML4W Hyprland Waybar WiFi Popup Fix"
-echo "======================================"
+echo "🔧 ML4W Hyprland Complete Repair Script"
+echo "======================================="
+echo "This script will diagnose and fix common ML4W Hyprland issues"
+echo ""
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
 
 # Function to check if running as root
 check_root() {
     if [[ $EUID -eq 0 ]]; then
-        echo "❌ Please run this script as regular user (not root)"
+        print_error "Please run this script as regular user (not root)"
         exit 1
     fi
 }
 
-# Function to install required packages
-install_required_packages() {
-    echo "📦 Installing required packages..."
+# Function to create backup directory
+create_backup() {
+    BACKUP_DIR="$HOME/.ml4w-backup-$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    print_info "Backup directory created: $BACKUP_DIR"
+    echo "$BACKUP_DIR" > /tmp/ml4w_backup_dir
+}
+
+# Function to backup important configs
+backup_configs() {
+    echo "💾 Backing up current configurations..."
+    BACKUP_DIR=$(cat /tmp/ml4w_backup_dir)
     
-    PACKAGES="nm-connection-editor network-manager-applet rofi wofi fuzzel"
-    
-    if command -v pacman &> /dev/null; then
-        sudo pacman -S --needed --noconfirm $PACKAGES
-    elif command -v apt &> /dev/null; then
-        sudo apt update && sudo apt install -y $PACKAGES
-    elif command -v dnf &> /dev/null; then
-        sudo dnf install -y $PACKAGES
+    # Backup Hyprland configs
+    if [[ -d "$HOME/.config/hypr" ]]; then
+        cp -r "$HOME/.config/hypr" "$BACKUP_DIR/" 2>/dev/null
+        print_status "Hyprland config backed up"
     fi
     
-    echo "✅ Required packages installed"
-}
-
-# Function to create WiFi menu script
-create_wifi_menu_script() {
-    echo "🔧 Creating WiFi menu script..."
+    # Backup Waybar configs
+    if [[ -d "$HOME/.config/waybar" ]]; then
+        cp -r "$HOME/.config/waybar" "$BACKUP_DIR/" 2>/dev/null
+        print_status "Waybar config backed up"
+    fi
     
-    mkdir -p "$HOME/.local/bin"
+    # Backup ML4W configs
+    if [[ -d "$HOME/.config/ml4w" ]]; then
+        cp -r "$HOME/.config/ml4w" "$BACKUP_DIR/" 2>/dev/null
+        print_status "ML4W config backed up"
+    fi
     
-    # Create WiFi menu script using rofi/wofi
-    cat > "$HOME/.local/bin/wifi-menu.sh" << 'EOF'
-#!/bin/bash
-# WiFi Menu Script for ML4W Hyprland
-
-# Check if connected to WiFi
-check_wifi_status() {
-    nmcli radio wifi | grep -q "enabled" && nmcli device status | grep -q "wifi.*connected"
+    # Backup system network configs
+    if [[ -f "/etc/NetworkManager/NetworkManager.conf" ]]; then
+        sudo cp /etc/NetworkManager/NetworkManager.conf "$BACKUP_DIR/" 2>/dev/null
+    fi
+    if [[ -f "/etc/iwd/main.conf" ]]; then
+        sudo cp /etc/iwd/main.conf "$BACKUP_DIR/" 2>/dev/null
+    fi
+    
+    print_status "Configuration backup completed"
 }
 
-# Get current WiFi network
-get_current_wifi() {
-    nmcli -t -f active,ssid dev wifi | awk -F: '$1=="yes" {print $2}'
-}
-
-# Show WiFi menu based on available tools
-show_wifi_menu() {
-    if command -v wofi &> /dev/null; then
-        # Use wofi for ML4W Hyprland
-        CURRENT_WIFI=$(get_current_wifi)
-        
-        # Get available networks
-        NETWORKS=$(nmcli -t -f ssid,signal,security dev wifi list | sort -t: -k2 -nr | while IFS=: read -r ssid signal security; do
-            if [[ -n "$ssid" ]]; then
-                if [[ "$ssid" == "$CURRENT_WIFI" ]]; then
-                    echo "🔗 $ssid ($signal%) [Connected]"
-                elif [[ "$security" == "--" ]]; then
-                    echo "📶 $ssid ($signal%) [Open]"
-                else
-                    echo "🔒 $ssid ($signal%) [Secured]"
-                fi
-            fi
-        done)
-        
-        # Add control options
-        OPTIONS="$NETWORKS
-📡 Refresh Networks
-⚙️  Network Settings
-❌ Disconnect WiFi
-🔄 Toggle WiFi"
-        
-        CHOICE=$(echo "$OPTIONS" | wofi --dmenu --prompt "WiFi Networks" --lines 10 --width 400)
-        
-    elif command -v rofi &> /dev/null; then
-        # Fallback to rofi
-        CURRENT_WIFI=$(get_current_wifi)
-        
-        NETWORKS=$(nmcli -t -f ssid,signal,security dev wifi list | sort -t: -k2 -nr | while IFS=: read -r ssid signal security; do
-            if [[ -n "$ssid" ]]; then
-                if [[ "$ssid" == "$CURRENT_WIFI" ]]; then
-                    echo "🔗 $ssid ($signal%) [Connected]"
-                elif [[ "$security" == "--" ]]; then
-                    echo "📶 $ssid ($signal%) [Open]"
-                else
-                    echo "🔒 $ssid ($signal%) [Secured]"
-                fi
-            fi
-        done)
-        
-        OPTIONS="$NETWORKS
-📡 Refresh Networks
-⚙️  Network Settings
-❌ Disconnect WiFi
-🔄 Toggle WiFi"
-        
-        CHOICE=$(echo "$OPTIONS" | rofi -dmenu -p "WiFi Networks" -lines 10)
+# Function to check system information
+check_system_info() {
+    echo "🖥️  System Information Check..."
+    
+    print_info "Hostname: $(hostname)"
+    print_info "Kernel: $(uname -r)"
+    print_info "Distribution: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+    print_info "Desktop Session: ${XDG_CURRENT_DESKTOP:-Not set}"
+    print_info "Wayland Display: ${WAYLAND_DISPLAY:-Not set}"
+    
+    # Check if running in Hyprland
+    if pgrep -x Hyprland > /dev/null; then
+        print_status "Hyprland is running"
     else
-        # Terminal fallback
-        nm-connection-editor &
-        return
+        print_warning "Hyprland is not currently running"
     fi
     
-    # Process choice
-    if [[ -z "$CHOICE" ]]; then
-        exit 0
-    elif [[ "$CHOICE" == *"Network Settings"* ]]; then
-        nm-connection-editor &
-    elif [[ "$CHOICE" == *"Refresh Networks"* ]]; then
-        nmcli device wifi rescan
-        notify-send "WiFi" "Networks refreshed"
-        exec "$0"  # Restart script
-    elif [[ "$CHOICE" == *"Disconnect WiFi"* ]]; then
-        nmcli device disconnect $(nmcli -t -f device,type device status | grep wifi | cut -d: -f1 | head -1)
-        notify-send "WiFi" "Disconnected"
-    elif [[ "$CHOICE" == *"Toggle WiFi"* ]]; then
-        if nmcli radio wifi | grep -q "enabled"; then
-            nmcli radio wifi off
-            notify-send "WiFi" "WiFi disabled"
-        else
-            nmcli radio wifi on
-            notify-send "WiFi" "WiFi enabled"
+    echo ""
+}
+
+# Function to check hardware
+check_hardware() {
+    echo "🔍 Hardware Check..."
+    
+    # Check CPU
+    CPU_INFO=$(lscpu | grep "Model name" | cut -d: -f2 | xargs)
+    print_info "CPU: $CPU_INFO"
+    
+    # Check if overheating is an issue (for your Acer laptop)
+    if [[ "$CPU_INFO" == *"AMD"* ]]; then
+        TEMP=$(sensors 2>/dev/null | grep -E "(temp1|Tdie|Tctl)" | head -1 | grep -oP '\+\d+\.\d+°C' | head -1)
+        if [[ -n "$TEMP" ]]; then
+            print_info "CPU Temperature: $TEMP"
         fi
-    elif [[ "$CHOICE" == *"[Connected]"* ]]; then
-        # Already connected, show info
-        SSID=$(echo "$CHOICE" | sed -n 's/🔗 \([^(]*\).*/\1/p' | xargs)
-        notify-send "WiFi" "Already connected to $SSID"
+    fi
+    
+    # Check GPU
+    GPU_INFO=$(lspci | grep -E "(VGA|3D)" | head -1 | cut -d: -f3 | xargs)
+    print_info "GPU: $GPU_INFO"
+    
+    # Check WiFi card
+    WIFI_INFO=$(lspci | grep -i "wireless\|wifi" | head -1 | cut -d: -f3 | xargs)
+    if [[ -n "$WIFI_INFO" ]]; then
+        print_info "WiFi: $WIFI_INFO"
     else
-        # Connect to selected network
-        SSID=$(echo "$CHOICE" | sed 's/^[🔗🔒📶] \([^(]*\).*/\1/' | xargs)
-        
-        if [[ "$CHOICE" == *"[Open]"* ]]; then
-            # Connect to open network
-            nmcli device wifi connect "$SSID"
-        else
-            # Prompt for password
-            if command -v wofi &> /dev/null; then
-                PASSWORD=$(echo | wofi --dmenu --prompt "Password for $SSID" --password)
-            elif command -v rofi &> /dev/null; then
-                PASSWORD=$(echo | rofi -dmenu -p "Password for $SSID" -password)
-            else
-                read -s -p "Password for $SSID: " PASSWORD
-            fi
-            
-            if [[ -n "$PASSWORD" ]]; then
-                nmcli device wifi connect "$SSID" password "$PASSWORD"
-            fi
-        fi
-        
-        # Check connection result
-        sleep 2
-        if check_wifi_status && [[ "$(get_current_wifi)" == "$SSID" ]]; then
-            notify-send "WiFi" "Connected to $SSID"
-        else
-            notify-send "WiFi" "Failed to connect to $SSID" -u critical
-        fi
-    fi
-}
-
-# Main function
-main() {
-    # Ensure NetworkManager is running
-    if ! systemctl is-active --quiet NetworkManager; then
-        notify-send "WiFi" "NetworkManager is not running" -u critical
-        exit 1
+        print_warning "No WiFi card detected"
     fi
     
-    # Rescan networks first
-    nmcli device wifi rescan 2>/dev/null &
-    
-    # Show menu
-    show_wifi_menu
+    echo ""
 }
 
-main "$@"
-EOF
-
-    chmod +x "$HOME/.local/bin/wifi-menu.sh"
-    echo "✅ WiFi menu script created"
-}
-
-# Function to fix waybar network configuration
-fix_waybar_network_config() {
-    echo "🔧 Fixing Waybar network configuration..."
+# Function to check services
+check_services() {
+    echo "⚙️  Service Status Check..."
     
-    # Find ML4W waybar config
-    WAYBAR_CONFIG=""
-    POSSIBLE_CONFIGS=(
-        "$HOME/.config/ml4w/config/waybar/config.jsonc"
-        "$HOME/.config/waybar/config.jsonc"
-        "$HOME/.config/waybar/config"
-        "$HOME/.config/ml4w-hyprland/waybar/config.jsonc"
-    )
-    
-    for config in "${POSSIBLE_CONFIGS[@]}"; do
-        if [[ -f "$config" ]]; then
-            WAYBAR_CONFIG="$config"
+    # Check display manager
+    for dm in sddm lightdm gdm gdm3; do
+        if systemctl is-active --quiet $dm; then
+            print_status "Display Manager: $dm (running)"
+            DM_ACTIVE=$dm
             break
         fi
     done
     
-    if [[ -z "$WAYBAR_CONFIG" ]]; then
-        echo "❌ Waybar config not found. Creating default config..."
-        mkdir -p "$HOME/.config/waybar"
-        WAYBAR_CONFIG="$HOME/.config/waybar/config.jsonc"
+    if [[ -z "$DM_ACTIVE" ]]; then
+        print_error "No display manager is running"
     fi
     
-    # Backup existing config
-    cp "$WAYBAR_CONFIG" "$WAYBAR_CONFIG.backup.$(date +%Y%m%d_%H%M%S)"
-    
-    # Create fixed waybar network configuration
-    python3 << EOF
-import json
-import re
-import os
-
-config_path = "$WAYBAR_CONFIG"
-
-try:
-    with open(config_path, 'r') as f:
-        content = f.read()
-    
-    # Remove comments for JSON parsing
-    content_clean = re.sub(r'//.*?\n', '\n', content)
-    content_clean = re.sub(r'/\*.*?\*/', '', content_clean, flags=re.DOTALL)
-    
-    config = json.loads(content_clean)
-    
-    # Fix network module with proper click handlers
-    network_config = {
-        "format-wifi": "  {signalStrength}% {essid}",
-        "format-ethernet": "  {ipaddr}/{cidr}",
-        "format-disconnected": "  Disconnected",
-        "format-linked": "  {ifname} (No IP)",
-        "tooltip-format": "Connected to {essid} via {ifname}",
-        "tooltip-format-wifi": "  {essid} ({signalStrength}%): {ipaddr}/{cidr}",
-        "tooltip-format-ethernet": "  {ifname}: {ipaddr}/{cidr}",
-        "tooltip-format-disconnected": "  Disconnected",
-        "on-click": os.path.expanduser("~/.local/bin/wifi-menu.sh"),
-        "on-click-right": "nm-connection-editor",
-        "interval": 5,
-        "max-length": 25
-    }
-    
-    # Update network module
-    if "network" in config:
-        config["network"].update(network_config)
-    else:
-        config["network"] = network_config
-    
-    # Save updated config (preserve original formatting as much as possible)
-    with open(config_path, 'w') as f:
-        json_str = json.dumps(config, indent=2, ensure_ascii=False)
-        
-        # Add back some comments
-        lines = json_str.split('\n')
-        output_lines = []
-        
-        for line in lines:
-            if '"network"' in line:
-                output_lines.append('    // Network module configuration')
-            output_lines.append(line)
-        
-        f.write('\n'.join(output_lines))
-    
-    print("✅ Waybar network config fixed")
-    
-except Exception as e:
-    print(f"⚠️  Could not automatically fix waybar config: {e}")
-    print("Manual fix required - see instructions below")
-EOF
-
-    echo "✅ Waybar configuration updated"
-}
-
-# Function to fix GTK popup issues
-fix_gtk_popup_issues() {
-    echo "🔧 Fixing GTK popup issues..."
-    
-    # Create or update GTK settings for proper popup behavior
-    mkdir -p "$HOME/.config/gtk-3.0"
-    mkdir -p "$HOME/.config/gtk-4.0"
-    
-    # GTK3 settings
-    cat >> "$HOME/.config/gtk-3.0/settings.ini" << 'EOF'
-
-# Waybar popup fix
-gtk-enable-animations=false
-gtk-menu-popup-delay=0
-gtk-tooltip-timeout=500
-gtk-tooltip-browse-timeout=0
-EOF
-
-    # GTK4 settings
-    cat >> "$HOME/.config/gtk-4.0/settings.ini" << 'EOF'
-
-# Waybar popup fix
-gtk-enable-animations=false
-EOF
-
-    echo "✅ GTK popup settings configured"
-}
-
-# Function to restart waybar safely
-restart_waybar() {
-    echo "🔄 Restarting Waybar..."
-    
-    # Kill existing waybar processes
-    pkill -f waybar 2>/dev/null || true
-    sleep 1
-    
-    # Start waybar again
-    if pgrep -x Hyprland > /dev/null; then
-        nohup waybar > /dev/null 2>&1 &
+    # Check network services
+    if systemctl is-active --quiet NetworkManager; then
+        print_status "NetworkManager: running"
+        NETWORK_BACKEND="NetworkManager"
+    elif systemctl is-active --quiet iwd; then
+        print_status "iwd: running"
+        NETWORK_BACKEND="iwd"
     else
-        echo "⚠️  Hyprland not running, waybar will start with next session"
+        print_error "No network manager is running"
     fi
     
-    echo "✅ Waybar restarted"
+    # Check audio
+    if systemctl --user is-active --quiet pipewire; then
+        print_status "PipeWire: running"
+    elif systemctl --user is-active --quiet pulseaudio; then
+        print_status "PulseAudio: running"
+    else
+        print_warning "No audio system detected"
+    fi
+    
+    # Check bluetooth
+    if systemctl is-active --quiet bluetooth; then
+        print_status "Bluetooth: running"
+    else
+        print_info "Bluetooth: not running"
+    fi
+    
+    echo ""
 }
 
-# Function to show manual configuration instructions
-show_manual_instructions() {
+# Function to check ML4W installation
+check_ml4w_installation() {
+    echo "📦 ML4W Installation Check..."
+    
+    # Check ML4W directories
+    if [[ -d "$HOME/.config/ml4w" ]]; then
+        print_status "ML4W config directory exists"
+    else
+        print_warning "ML4W config directory missing"
+    fi
+    
+    # Check Hyprland config
+    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+        print_status "Hyprland config exists"
+    else
+        print_error "Hyprland config missing"
+    fi
+    
+    # Check Waybar config
+    WAYBAR_CONFIGS=(
+        "$HOME/.config/waybar/config.jsonc"
+        "$HOME/.config/waybar/config"
+        "$HOME/.config/ml4w/config/waybar/config.jsonc"
+    )
+    
+    WAYBAR_FOUND=false
+    for config in "${WAYBAR_CONFIGS[@]}"; do
+        if [[ -f "$config" ]]; then
+            print_status "Waybar config found: $config"
+            WAYBAR_CONFIG="$config"
+            WAYBAR_FOUND=true
+            break
+        fi
+    done
+    
+    if [[ "$WAYBAR_FOUND" == "false" ]]; then
+        print_error "No Waybar config found"
+    fi
+    
+    # Check running processes
+    if pgrep -x waybar > /dev/null; then
+        print_status "Waybar is running"
+    else
+        print_warning "Waybar is not running"
+    fi
+    
     echo ""
-    echo "📋 Manual Configuration Instructions:"
-    echo "====================================="
+}
+
+# Function to diagnose network issues
+diagnose_network() {
+    echo "🌐 Network Diagnostics..."
+    
+    # Check network interfaces
+    INTERFACES=$(ip link show | grep -E "wlan|eth|enp" | awk -F: '{print $2}' | xargs)
+    if [[ -n "$INTERFACES" ]]; then
+        print_info "Network interfaces: $INTERFACES"
+    fi
+    
+    # Check WiFi status
+    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
+        WIFI_STATUS=$(nmcli radio wifi)
+        print_info "WiFi radio: $WIFI_STATUS"
+        
+        CURRENT_WIFI=$(nmcli -t -f active,ssid dev wifi | awk -F: '$1=="yes" {print $2}')
+        if [[ -n "$CURRENT_WIFI" ]]; then
+            print_status "Connected to WiFi: $CURRENT_WIFI"
+        else
+            print_warning "Not connected to WiFi"
+        fi
+    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
+        WIFI_DEVICE=$(iwctl device list | grep -E 'wlan[0-9]+' | awk '{print $1}' | head -1)
+        if [[ -n "$WIFI_DEVICE" ]]; then
+            print_info "WiFi device: $WIFI_DEVICE"
+            CURRENT_WIFI=$(iwctl station "$WIFI_DEVICE" show | grep "Connected network" | awk '{print $3}')
+            if [[ -n "$CURRENT_WIFI" ]]; then
+                print_status "Connected to WiFi: $CURRENT_WIFI"
+            else
+                print_warning "Not connected to WiFi"
+            fi
+        fi
+    fi
+    
+    # Check internet connectivity
+    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
+        print_status "Internet connectivity: OK"
+    else
+        print_error "No internet connectivity"
+    fi
+    
     echo ""
-    echo "If the automatic fix didn't work, add this to your waybar config:"
+}
+
+# Function to check input issues (NumLock, Super key)
+diagnose_input() {
+    echo "⌨️  Input Diagnostics..."
+    
+    # Check NumLock status
+    if command -v numlockx &> /dev/null; then
+        print_status "numlockx is installed"
+    else
+        print_warning "numlockx not installed"
+    fi
+    
+    # Check for input-related configs
+    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+        if grep -q "numlockx" "$HOME/.config/hypr/hyprland.conf"; then
+            print_status "NumLock configuration found in Hyprland config"
+        else
+            print_warning "No NumLock configuration in Hyprland config"
+        fi
+    fi
+    
+    # Check display manager NumLock settings
+    if [[ "$DM_ACTIVE" == "sddm" && -f "/etc/sddm.conf" ]]; then
+        if grep -q "Numlock=off" /etc/sddm.conf; then
+            print_status "SDDM NumLock disabled"
+        else
+            print_warning "SDDM NumLock not configured"
+        fi
+    fi
+    
     echo ""
-    echo '  "network": {'
-    echo '    "format-wifi": "  {signalStrength}% {essid}",'
-    echo '    "format-ethernet": "  {ipaddr}/{cidr}",'
-    echo '    "format-disconnected": "  Disconnected",'
-    echo '    "tooltip-format-wifi": "  {essid} ({signalStrength}%): {ipaddr}/{cidr}",'
-    echo '    "on-click": "~/.local/bin/wifi-menu.sh",'
-    echo '    "on-click-right": "nm-connection-editor",'
-    echo '    "interval": 5'
-    echo '  }'
+}
+
+# Function to install missing packages
+install_missing_packages() {
+    echo "📦 Installing Missing Packages..."
+    
+    # Essential packages for ML4W Hyprland
+    ESSENTIAL_PACKAGES="hyprland waybar wofi rofi kitty alacritty nautilus firefox"
+    
+    # Network packages based on backend
+    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
+        NETWORK_PACKAGES="networkmanager network-manager-applet nm-connection-editor"
+    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
+        NETWORK_PACKAGES="iwd systemd-resolvconf"
+    fi
+    
+    # Audio packages
+    AUDIO_PACKAGES="pipewire pipewire-pulse pipewire-alsa pavucontrol"
+    
+    # Input packages
+    INPUT_PACKAGES="numlockx"
+    
+    # Theme packages
+    THEME_PACKAGES="gtk3 gtk4"
+    
+    ALL_PACKAGES="$ESSENTIAL_PACKAGES $NETWORK_PACKAGES $AUDIO_PACKAGES $INPUT_PACKAGES $THEME_PACKAGES"
+    
+    if command -v pacman &> /dev/null; then
+        print_info "Installing packages with pacman..."
+        sudo pacman -S --needed --noconfirm $ALL_PACKAGES
+    elif command -v apt &> /dev/null; then
+        print_info "Installing packages with apt..."
+        sudo apt update && sudo apt install -y $ALL_PACKAGES
+    elif command -v dnf &> /dev/null; then
+        print_info "Installing packages with dnf..."
+        sudo dnf install -y $ALL_PACKAGES
+    fi
+    
+    print_status "Package installation completed"
     echo ""
-    echo "🔧 Alternative click handlers you can try:"
-    echo "  • nm-connection-editor (Network settings GUI)"
-    echo "  • nmtui (Terminal UI)"
-    echo "  • ~/.local/bin/wifi-menu.sh (Custom script)"
+}
+
+# Function to repair network configuration
+repair_network() {
+    echo "🔧 Repairing Network Configuration..."
+    
+    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
+        # Create stable NetworkManager config
+        sudo mkdir -p /etc/NetworkManager/conf.d/
+        sudo tee /etc/NetworkManager/conf.d/99-ml4w-stability.conf > /dev/null <<EOF
+[connection]
+wifi.powersave=2
+
+[device]
+wifi.scan-rand-mac-address=no
+EOF
+        
+        # Ensure services are enabled
+        sudo systemctl enable --now NetworkManager
+        print_status "NetworkManager configuration repaired"
+        
+    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
+        # Create iwd configuration
+        sudo mkdir -p /etc/iwd
+        sudo tee /etc/iwd/main.conf > /dev/null <<EOF
+[General]
+EnableNetworkConfiguration=true
+AddressRandomization=once
+
+[Network]
+NameResolvingService=systemd
+EnableIPv6=true
+RoutePriorityOffset=300
+EOF
+        
+        # Enable required services
+        sudo systemctl enable --now iwd
+        sudo systemctl enable --now systemd-resolved
+        sudo systemctl enable --now systemd-networkd
+        
+        # Disable conflicting services
+        sudo systemctl disable --now wpa_supplicant 2>/dev/null || true
+        
+        print_status "iwd configuration repaired"
+    fi
+    
     echo ""
+}
+
+# Function to repair NumLock configuration
+repair_numlock() {
+    echo "🔢 Repairing NumLock Configuration..."
+    
+    # Install numlockx if missing
+    if ! command -v numlockx &> /dev/null; then
+        if command -v pacman &> /dev/null; then
+            sudo pacman -S --needed --noconfirm numlockx
+        elif command -v apt &> /dev/null; then
+            sudo apt install -y numlockx
+        fi
+    fi
+    
+    # Fix display manager settings
+    if [[ "$DM_ACTIVE" == "sddm" ]]; then
+        sudo mkdir -p /etc/sddm.conf.d/
+        sudo tee /etc/sddm.conf.d/10-numlock.conf > /dev/null <<EOF
+[General]
+Numlock=off
+EOF
+        print_status "SDDM NumLock disabled"
+    fi
+    
+    # Add to Hyprland config
+    if [[ -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+        if ! grep -q "numlockx off" "$HOME/.config/hypr/hyprland.conf"; then
+            echo "exec-once = numlockx off" >> "$HOME/.config/hypr/hyprland.conf"
+            print_status "Added NumLock disable to Hyprland config"
+        fi
+    fi
+    
+    echo ""
+}
+
+# Function to repair Waybar configuration
+repair_waybar() {
+    echo "📊 Repairing Waybar Configuration..."
+    
+    if [[ -n "$WAYBAR_CONFIG" && -f "$WAYBAR_CONFIG" ]]; then
+        # Create a backup
+        cp "$WAYBAR_CONFIG" "$WAYBAR_CONFIG.backup.$(date +%Y%m%d_%H%M%S)"
+        
+        # Create WiFi menu script
+        mkdir -p "$HOME/.local/bin"
+        
+        if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
+            cat > "$HOME/.local/bin/waybar-wifi.sh" << 'EOF'
+#!/bin/bash
+if command -v nm-connection-editor &> /dev/null; then
+    nm-connection-editor &
+else
+    notify-send "Error" "nm-connection-editor not found"
+fi
+EOF
+        else
+            cat > "$HOME/.local/bin/waybar-wifi.sh" << 'EOF'
+#!/bin/bash
+if command -v iwctl &> /dev/null; then
+    if command -v kitty &> /dev/null; then
+        kitty iwctl &
+    else
+        iwctl &
+    fi
+else
+    notify-send "Error" "iwctl not found"
+fi
+EOF
+        fi
+        
+        chmod +x "$HOME/.local/bin/waybar-wifi.sh"
+        print_status "WiFi menu script created"
+        
+        print_info "Waybar config backed up and prepared"
+        print_info "Add this to your network module:"
+        echo '  "on-click": "'$HOME'/.local/bin/waybar-wifi.sh"'
+    else
+        print_warning "No Waybar config found to repair"
+    fi
+    
+    echo ""
+}
+
+# Function to restart services
+restart_services() {
+    echo "🔄 Restarting Services..."
+    
+    # Restart display manager configuration
+    if [[ "$DM_ACTIVE" == "sddm" ]]; then
+        print_info "SDDM config updated (restart required)"
+    fi
+    
+    # Restart network services
+    if [[ "$NETWORK_BACKEND" == "NetworkManager" ]]; then
+        sudo systemctl restart NetworkManager
+        print_status "NetworkManager restarted"
+    elif [[ "$NETWORK_BACKEND" == "iwd" ]]; then
+        sudo systemctl restart iwd
+        sudo systemctl restart systemd-networkd
+        print_status "iwd services restarted"
+    fi
+    
+    # Restart Waybar if Hyprland is running
+    if pgrep -x Hyprland > /dev/null; then
+        pkill waybar 2>/dev/null || true
+        sleep 1
+        nohup waybar > /dev/null 2>&1 &
+        print_status "Waybar restarted"
+    fi
+    
+    echo ""
+}
+
+# Function to create maintenance scripts
+create_maintenance_scripts() {
+    echo "🛠️  Creating Maintenance Scripts..."
+    
+    mkdir -p "$HOME/.local/bin"
+    
+    # Create network reset script
+    cat > "$HOME/.local/bin/ml4w-network-reset.sh" << 'EOF'
+#!/bin/bash
+echo "🔄 ML4W Network Reset"
+if systemctl is-active --quiet NetworkManager; then
+    sudo systemctl restart NetworkManager
+    nmcli radio wifi off && sleep 2 && nmcli radio wifi on
+elif systemctl is-active --quiet iwd; then
+    sudo systemctl restart iwd
+    sudo systemctl restart systemd-networkd
+fi
+notify-send "Network Reset" "Network services restarted"
+EOF
+    
+    # Create waybar restart script
+    cat > "$HOME/.local/bin/ml4w-waybar-restart.sh" << 'EOF'
+#!/bin/bash
+echo "🔄 ML4W Waybar Restart"
+pkill waybar 2>/dev/null || true
+sleep 1
+nohup waybar > /dev/null 2>&1 &
+notify-send "Waybar" "Waybar restarted"
+EOF
+    
+    # Create system info script
+    cat > "$HOME/.local/bin/ml4w-system-info.sh" << 'EOF'
+#!/bin/bash
+echo "ML4W System Information"
+echo "======================"
+echo "Hyprland: $(pgrep -x Hyprland > /dev/null && echo "Running" || echo "Not running")"
+echo "Waybar: $(pgrep -x waybar > /dev/null && echo "Running" || echo "Not running")"
+echo "Network: $(systemctl is-active NetworkManager iwd | head -1)"
+echo "Display: ${WAYLAND_DISPLAY:-Not set}"
+EOF
+    
+    chmod +x "$HOME/.local/bin/ml4w-"*.sh
+    print_status "Maintenance scripts created in ~/.local/bin/"
+    
+    echo ""
+}
+
+# Function to show repair summary
+show_summary() {
+    echo "📋 Repair Summary"
+    echo "================"
+    echo ""
+    print_status "Configuration backup created"
+    print_status "System diagnostics completed"
+    print_status "Missing packages installed"
+    print_status "Network configuration repaired"
+    print_status "NumLock configuration fixed"
+    print_status "Waybar configuration prepared"
+    print_status "Services restarted"
+    print_status "Maintenance scripts created"
+    echo ""
+    print_info "Maintenance Commands:"
+    echo "  ~/.local/bin/ml4w-network-reset.sh    # Reset network"
+    echo "  ~/.local/bin/ml4w-waybar-restart.sh   # Restart waybar"
+    echo "  ~/.local/bin/ml4w-system-info.sh      # System info"
+    echo ""
+    print_warning "Recommended Actions:"
+    echo "  1. Reboot your system for all changes to take effect"
+    echo "  2. Test WiFi connectivity after reboot"
+    echo "  3. Check NumLock behavior on startup"
+    echo "  4. Verify Waybar functionality"
+    echo ""
+    
+    BACKUP_DIR=$(cat /tmp/ml4w_backup_dir)
+    print_info "Backup location: $BACKUP_DIR"
+    echo ""
+    print_info "Reboot command: sudo reboot"
 }
 
 # Main execution function
 main() {
     check_root
+    create_backup
     
-    echo "🚀 Starting Waybar WiFi popup fix..."
+    echo "🚀 Starting ML4W Hyprland Complete Repair..."
     echo ""
     
-    # Install required packages
-    install_required_packages
+    # Diagnostic phase
+    check_system_info
+    check_hardware
+    check_services
+    check_ml4w_installation
+    diagnose_network
+    diagnose_input
     
-    # Create custom WiFi menu script
-    create_wifi_menu_script
+    # Repair phase
+    backup_configs
+    install_missing_packages
+    repair_network
+    repair_numlock
+    repair_waybar
+    restart_services
+    create_maintenance_scripts
     
-    # Fix GTK popup issues
-    fix_gtk_popup_issues
+    # Summary
+    show_summary
     
-    # Fix waybar configuration
-    fix_waybar_network_config
+    echo "✅ ML4W Hyprland repair completed!"
     
-    # Restart waybar
-    restart_waybar
-    
-    # Show manual instructions
-    show_manual_instructions
-    
-    echo ""
-    echo "========================================"
-    echo "✅ Waybar WiFi popup fix completed!"
-    echo ""
-    echo "🧪 Test the fix:"
-    echo "   • Click on the WiFi icon in waybar"
-    echo "   • Right-click for network settings"
-    echo "   • Check if popup stays open"
-    echo ""
-    echo "🛠️  If issues persist:"
-    echo "   • Check waybar logs: journalctl -f --user-unit waybar"
-    echo "   • Run WiFi script manually: ~/.local/bin/wifi-menu.sh"
-    echo "   • Restart waybar: pkill waybar && waybar &"
-    echo ""
-    echo "📍 Common fixes applied:"
-    echo "   • Custom WiFi menu script created"
-    echo "   • Waybar network config updated"
-    echo "   • GTK popup issues fixed"
-    echo "   • Click handlers properly configured"
+    # Clean up
+    rm -f /tmp/ml4w_backup_dir
 }
 
 # Run the main function

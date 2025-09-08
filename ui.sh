@@ -1,48 +1,34 @@
 #!/bin/bash
 
-# Fix ML4W Hyprland WiFi popup with GTK error resolution
-echo "Fixing ML4W WiFi popup and GTK errors..."
+# Fix frequent WiFi disconnections in ML4W Hyprland
 
-# Kill existing processes to avoid conflicts
-killall nm-applet waybar 2>/dev/null
-sleep 2
+echo "Diagnosing WiFi disconnection issues..."
 
-# Install/Update required packages
-sudo pacman -S --needed networkmanager network-manager-applet nm-connection-editor waybar --noconfirm
+# Check for conflicting network services
+echo "Checking running network services..."
+systemctl list-units --type service | grep -E "(network|dhcp|wpa)"
 
-# Enable NetworkManager service
+# Stop and disable conflicting services
+echo "Stopping conflicting network managers..."
+sudo systemctl stop dhcpcd wpa_supplicant systemd-networkd
+sudo systemctl disable dhcpcd wpa_supplicant systemd-networkd
+
+# Enable only NetworkManager
 sudo systemctl enable --now NetworkManager
 
-# Set proper environment variables for GTK
-export GDK_BACKEND=wayland,x11
-export QT_QPA_PLATFORM=wayland;xcb
+# Disable WiFi power management (major cause of disconnects)
+echo "Disabling WiFi power management..."
+sudo mkdir -p /etc/NetworkManager/conf.d/
+echo -e "[connection]\nwifi.powersave = 2" | sudo tee /etc/NetworkManager/conf.d/default-wifi-powersave-off.conf
 
-# Check if system tray is enabled in waybar config
-WAYBAR_CONFIG="$HOME/.config/waybar/config.jsonc"
-if [ -f "$WAYBAR_CONFIG" ]; then
-    # Backup original config
-    cp "$WAYBAR_CONFIG" "$WAYBAR_CONFIG.backup"
-    
-    # Ensure tray module is enabled
-    if ! grep -q '"tray"' "$WAYBAR_CONFIG"; then
-        echo "Adding tray module to waybar config..."
-        sed -i 's/"modules-right": \[/"modules-right": ["tray",/' "$WAYBAR_CONFIG"
-    fi
-fi
+# Restart NetworkManager to apply changes
+sudo systemctl restart NetworkManager
 
-# Start nm-applet with proper options
-echo "Starting NetworkManager applet..."
-nm-applet --indicator --sm-disable &
-
-# Wait a moment for nm-applet to initialize
-sleep 3
-
-# Restart waybar
-echo "Restarting waybar..."
+# Fix nm-applet integration
+killall nm-applet waybar 2>/dev/null
+sleep 2
+nm-applet --indicator &
 waybar &
 
-# Wait for waybar to start
-sleep 2
-
-echo "WiFi popup fix applied. The GTK warnings should be reduced."
-echo "Click on the network icon in the top bar to test."
+echo "WiFi disconnection fix applied!"
+echo "Reboot recommended for full effect."
